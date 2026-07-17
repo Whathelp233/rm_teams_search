@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 28 15">
+<rect width="28" height="15" fill="#111b2b"/>
+<g fill="none" stroke="#8091a8" stroke-width=".08"><path d="M.1.1h27.8v14.8H.1z"/><path d="M14 .1v14.8" stroke-dasharray=".25 .22"/></g>
+<g opacity=".88"><path d="M0 0h4.4v3.1H0zM0 11.9h4.4V15H0z" fill="#b83245"/><path d="M23.6 0H28v3.1h-4.4zM23.6 11.9H28V15h-4.4z" fill="#2874b8"/></g>
+<g fill="#465a70" stroke="#a7b5c5" stroke-width=".07"><path d="M7 4.1h3.1v6.8H7z"/><path d="M17.9 4.1H21v6.8h-3.1z"/><path d="M12.4 5.5h3.2v4h-3.2z"/></g>
+<g font-family="sans-serif" font-size=".48" text-anchor="middle" fill="#eef5ff"><text x="2.2" y="1.75">红方区域</text><text x="25.8" y="1.75">蓝方区域</text><text x="8.55" y="7.65">高地</text><text x="19.45" y="7.65">高地</text><text x="14" y="7.65">中央区域</text></g>
+<g font-family="sans-serif" font-size=".36" fill="#a8b7c9"><text x=".35" y="14.55">官方坐标原点</text><text x="23.2" y="14.55">X → 28m</text></g>
+</svg>

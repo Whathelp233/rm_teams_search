@@ -1,158 +1,87 @@
 <script setup>
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { init, use } from 'echarts/core'
 import { BarChart, RadarChart } from 'echarts/charts'
 import { GridComponent, RadarComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
+import { canonicalPoint, reliabilityTone } from './domain.js'
 
 use([BarChart, RadarChart, GridComponent, RadarComponent, TooltipComponent, CanvasRenderer])
-
-const index = ref({ teams: [] })
-const query = ref('')
-const region = ref('全部')
-const selected = ref(null)
-const compareSlug = ref('')
-const compareTeam = ref(null)
-const activeGame = ref(null)
-const routes = ref(null)
-const error = ref('')
-let scoreChart
-let damageChart
 const base = import.meta.env.BASE_URL
+const index = ref({ teams: [] }), selected = ref(null), query = ref(''), region = ref('全部'), error = ref('')
+const heat = ref(null), heatSide = ref('全部'), heatRobot = ref('全部'), heatView = ref('actual'), heatFrom = ref(0), heatTo = ref(420)
+const gameData = ref(null), activeGame = ref(null), time = ref(0), playing = ref(false), speed = ref(1), tail = ref(20), mapMode = ref('raster')
+const visibleRobots = ref({}), compareSlug = ref(''), compareTeam = ref(null)
+let scoreChart, damageChart, timer
+const colors = ['#ff5268','#ff9e54','#ffd166','#9b7bff','#ef70cb','#ff355f','#48a8ff','#58d3ff','#41e1a6','#6f8dff','#61b8ff','#16c7e8']
+const teams = computed(() => index.value.teams.filter(t => (region.value === '全部' || t.region === region.value) && (!query.value || t.team.includes(query.value))))
+const slug = computed(() => index.value.teams.find(t => t.team === selected.value?.team)?.slug)
+const reliability = computed(() => selected.value?.reliability)
+const filteredHeat = computed(() => (heat.value?.cells || []).filter(c => (heatSide.value === '全部' || c[0] === heatSide.value) && (heatRobot.value === '全部' || c[1] === heatRobot.value) && c[2] >= heatFrom.value && c[2] <= heatTo.value))
+const maxHeat = computed(() => Math.max(1, ...filteredHeat.value.map(c => c[5])))
+const shownEvents = computed(() => (gameData.value?.events || []).filter(e => e.second <= time.value))
+const currentFrame = computed(() => {
+  const frames = gameData.value?.frames || []; let found = []
+  for (const frame of frames) { if (frame[0] > time.value) break; found = frame[1] }
+  return found
+})
+const trails = computed(() => {
+  if (!gameData.value) return []
+  const result = gameData.value.robots.map((robot, i) => ({ robot, i, points: [] }))
+  for (const [sec, rows] of gameData.value.frames) if (sec >= time.value - tail.value && sec <= time.value) for (const row of rows) if (row[10] && visibleRobots.value[row[0]] !== false) result[row[0]].points.push(row)
+  return result.filter(x => x.points.length)
+})
+const mapFile = computed(() => mapMode.value === 'vector' ? 'field-vector.svg' : `field-${gameData.value?.map || 'current'}.jpg`)
 
-const teams = computed(() => index.value.teams.filter(t =>
-  (region.value === '全部' || t.region === region.value) &&
-  (!query.value || t.team.includes(query.value))
-))
-const teamBySlug = computed(() => Object.fromEntries(index.value.teams.map(t => [t.slug, t])))
-const headToHead = computed(() => compareTeam.value ? selected.value.matches.filter(m => m.opponent === compareTeam.value.team) : [])
-
-async function loadTeam(slug) {
-  error.value = ''
-  const response = await fetch(`${base}data/teams/${slug}.json`)
-  if (!response.ok) throw new Error(`队伍数据加载失败: ${response.status}`)
-  selected.value = await response.json()
-  activeGame.value = null
-  routes.value = null
-  await nextTick()
-  renderCharts()
+function heatXY(cell) {
+  let x = (cell[3] + .5) / 2, y = (cell[4] + .5) / 2
+  if (heatView.value === 'canonical' && cell[0] === '蓝') [x, y] = canonicalPoint(x, y, '蓝')
+  return [x, y]
 }
-
-async function loadCompare() {
-  if (!compareSlug.value) { compareTeam.value = null; return }
-  compareTeam.value = await (await fetch(`${base}data/teams/${compareSlug.value}.json`)).json()
+function frameXY(row, robot) { return heatView.value === 'canonical' ? canonicalPoint(row[1], row[2], robot.side) : [row[1], row[2]] }
+function fmtSecond(value) { const v = Math.max(0, Math.round(value)); return `${Math.floor(v/60)}:${String(v%60).padStart(2,'0')}` }
+async function loadTeam(teamSlug) {
+  playing.value = false; gameData.value = null; activeGame.value = null
+  const [teamRes, heatRes] = await Promise.all([fetch(`${base}data/teams/${teamSlug}.json`), fetch(`${base}data/heatmaps/${teamSlug}.json`)])
+  if (!teamRes.ok || !heatRes.ok) throw new Error('队伍细粒度数据加载失败')
+  selected.value = await teamRes.json(); heat.value = await heatRes.json(); heatTo.value = Math.max(...selected.value.matches.map(m => m.duration_sec), 420)
+  await nextTick(); renderCharts()
 }
-
-async function loadRoutes(game) {
-  activeGame.value = game
-  const slug = index.value.teams.find(t => t.team === selected.value.team)?.slug
-  const response = await fetch(`${base}data/routes/${slug}/${game.game_id}.json`)
-  if (!response.ok) throw new Error(`路线数据加载失败: ${response.status}`)
-  routes.value = await response.json()
+async function loadGame(game) {
+  playing.value = false; activeGame.value = game
+  const response = await fetch(`${base}data/games/${game.game_id}.json`); if (!response.ok) throw new Error('对局时间轴加载失败')
+  gameData.value = await response.json(); time.value = 0; visibleRobots.value = Object.fromEntries(gameData.value.robots.map((_, i) => [i, true]))
 }
-
+function togglePlay() { playing.value = !playing.value }
+function tick() { if (!playing.value || !gameData.value) return; time.value += .1 * speed.value; if (time.value >= gameData.value.game.duration_sec) { time.value = gameData.value.game.duration_sec; playing.value = false } }
 function renderCharts() {
   if (!selected.value) return
   scoreChart?.dispose(); damageChart?.dispose()
-  scoreChart = init(document.getElementById('score-chart'))
-  const labels = ['火力', '目标', '空间', '防守', '资源', '适应']
-  const keys = ['firepower', 'objective', 'spatial', 'defense', 'resource', 'adaptability']
-  scoreChart.setOption({
-    radar: { indicator: labels.map(name => ({ name, max: 100 })), splitArea: { areaStyle: { color: ['#13233a', '#0e1a2d'] } } },
-    series: [{ type: 'radar', data: [{ value: keys.map(k => selected.value.scores[k]), name: selected.value.team }], areaStyle: { color: '#22d3ee66' }, lineStyle: { color: '#22d3ee' } }],
-    textStyle: { color: '#cbd5e1' }
-  })
-  damageChart = init(document.getElementById('damage-chart'))
-  const damage = selected.value.damage_breakdown.slice(0, 12)
-  damageChart.setOption({
-    grid: { left: 120, right: 25, top: 20, bottom: 30 },
-    xAxis: { type: 'value', axisLabel: { color: '#94a3b8' } },
-    yAxis: { type: 'category', data: damage.map(d => `${d.target_type}·${d.source_type}`).reverse(), axisLabel: { color: '#cbd5e1' } },
-    series: [{ type: 'bar', data: damage.map(d => d.damage).reverse(), itemStyle: { color: '#f59e0b' } }],
-    tooltip: { trigger: 'axis' }
-  })
+  scoreChart = init(document.getElementById('score-chart')); const keys = ['firepower','objective','spatial','defense','resource','adaptability']
+  scoreChart.setOption({radar:{indicator:['火力','目标','空间','防守','资源','适应'].map(name=>({name,max:100})),splitArea:{areaStyle:{color:['#13233a','#0e1a2d']}}},series:[{type:'radar',data:[{value:keys.map(k=>selected.value.scores[k])}],areaStyle:{color:'#22d3ee66'},lineStyle:{color:'#22d3ee'}}],textStyle:{color:'#cbd5e1'}})
+  damageChart = init(document.getElementById('damage-chart')); const damage = selected.value.damage_breakdown.slice(0,12)
+  damageChart.setOption({grid:{left:120,right:25,top:20,bottom:30},xAxis:{type:'value',axisLabel:{color:'#94a3b8'}},yAxis:{type:'category',data:damage.map(d=>`${d.target_type}·${d.source_type}`).reverse(),axisLabel:{color:'#cbd5e1'}},series:[{type:'bar',data:damage.map(d=>d.damage).reverse(),itemStyle:{color:'#f59e0b'}}],tooltip:{trigger:'axis'}})
 }
-
-function routePoints(points) {
-  return points.map(p => `${(p[1] / 28 * 100).toFixed(2)},${(100 - p[2] / 15 * 100).toFixed(2)}`).join(' ')
-}
-
-const routeColors = ['#22d3ee','#f59e0b','#a78bfa','#34d399','#fb7185','#60a5fa','#f97316']
-
-onMounted(async () => {
-  try {
-    index.value = await (await fetch(`${base}data/index.json`)).json()
-    const pilot = index.value.teams.find(t => t.team === '华南农业大学') || index.value.teams[0]
-    if (pilot) await loadTeam(pilot.slug)
-  } catch (e) { error.value = e.message }
-})
-
-watch(compareSlug, loadCompare)
+watch(compareSlug, async value => { compareTeam.value = value ? await (await fetch(`${base}data/teams/${value}.json`)).json() : null })
+onMounted(async () => { timer = setInterval(tick, 100); try { index.value = await (await fetch(`${base}data/index.json`)).json(); const first=index.value.teams.find(t=>t.team==='华南农业大学')||index.value.teams[0]; if(first) await loadTeam(first.slug) } catch(e) { error.value=e.message } })
+onBeforeUnmount(() => clearInterval(timer))
 </script>
 
 <template>
-  <div class="shell">
-    <aside>
-      <div class="brand"><span>RMUC 2026</span><strong>战术情报库</strong></div>
-      <input v-model="query" placeholder="搜索队伍" />
-      <select v-model="region"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select>
-      <div class="team-list">
-        <button v-for="team in teams" :key="team.slug" :class="{active:selected?.team===team.team}" @click="loadTeam(team.slug)">
-          <span>{{ team.team }}</span><small>{{ team.wins }}/{{ team.games }} · {{ team.region }}</small>
-        </button>
-      </div>
-    </aside>
-    <main v-if="selected">
-      <div class="notice">空间统计仅采用通信协议官方坐标和规则手册 28×15m 场地；内部行为树地图与 SCAU 叠加图已排除。</div>
-      <header>
-        <div><p>{{ selected.summary.region }} <em v-if="selected.champion">{{ selected.champion }}</em></p><h1>{{ selected.team }}</h1></div>
-        <div class="record"><strong>{{ selected.summary.wins }}–{{ selected.summary.games-selected.summary.wins }}</strong><span>胜率 {{ selected.summary.win_rate.toFixed(1) }}%</span></div>
-      </header>
-      <section class="kpis">
-        <article><span>场均输出</span><strong>{{ selected.summary.avg_damage_dealt?.toFixed(0) }}</strong></article>
-        <article><span>场均基地伤害</span><strong>{{ selected.summary.avg_base_damage?.toFixed(0) }}</strong></article>
-        <article><span>场均前哨伤害</span><strong>{{ selected.summary.avg_outpost_damage?.toFixed(0) }}</strong></article>
-        <article><span>检测命中/发弹</span><strong>{{ ((selected.summary.shot_accuracy||0)*100).toFixed(1) }}%</strong></article>
-      </section>
-      <section class="grid-two">
-        <article class="panel"><h2>分维度评分</h2><div id="score-chart" class="chart"></div></article>
-        <article class="panel"><h2>主要伤害来源</h2><div id="damage-chart" class="chart"></div></article>
-      </section>
-      <section class="panel">
-        <h2>稳定战术与观察</h2>
-        <div class="patterns"><div v-for="p in selected.patterns" :key="p.pattern_id" :class="['pattern',p.classification]">
-          <b>{{ p.label }}</b><span>{{ p.classification }} · {{ (p.rate*100).toFixed(0) }}%</span><small>{{ p.games_observed }} 局 / {{ p.opponents }} 个对手</small>
-        </div></div>
-      </section>
-      <section class="panel">
-        <h2>全队克制方案</h2>
-        <div class="counter" v-for="item in selected.counter_plan" :key="item.signal"><b>{{ item.signal }}</b><p>{{ item.action }}</p><small>退出：{{ item.exit }}</small></div>
-      </section>
-      <section class="panel">
-        <div class="section-head"><h2>官方坐标热力图</h2><span>红蓝统一为己方视角</span></div>
-        <img class="heatmap" :src="`${base}heatmaps/${index.teams.find(t=>t.team===selected.team)?.slug}-heatmap.svg`" />
-      </section>
-      <section class="panel">
-        <div class="section-head"><h2>全部逐局</h2><span>点击查看2秒采样路线</span></div>
-        <div class="match-grid"><button v-for="m in selected.matches" :key="m.game_id" @click="loadRoutes(m)">
-          <b>{{ m.won ? '胜' : '负' }} · {{ m.opponent }}</b><span>{{ m.rule_version }} · {{ m.side }}方</span><small>输出 {{ m.damage_dealt.toFixed(0) }} / 基地 {{ m.base_damage.toFixed(0) }}</small>
-        </button></div>
-      </section>
-      <section v-if="routes" class="panel">
-        <h2>局 {{ activeGame.game_id }} 路线 · {{ activeGame.opponent }}</h2>
-        <svg class="route-map" viewBox="0 0 100 100" preserveAspectRatio="none">
-          <rect width="100" height="100" fill="#0e1a2d" stroke="#94a3b8" />
-          <polyline v-for="(points,key,i) in routes.routes" :key="key" :points="routePoints(points)" fill="none" :stroke="routeColors[i%routeColors.length]" stroke-width="0.45" vector-effect="non-scaling-stroke" />
-        </svg>
-        <div class="legend"><span v-for="(_,key,i) in routes.routes" :key="key"><i :style="{background:routeColors[i%routeColors.length]}"></i>{{ key }}</span></div>
-      </section>
-      <section class="panel compare">
-        <h2>双队对比</h2>
-        <select v-model="compareSlug"><option value="">选择另一支队伍</option><option v-for="t in index.teams.filter(t=>t.team!==selected.team)" :value="t.slug">{{ t.team }}</option></select>
-        <p v-if="compareTeam" class="compare-status">{{ headToHead.length ? `数据库中有 ${headToHead.length} 局历史交手` : '数据库中无历史交手：以下仅为模型对比，不代表实战结论' }}</p>
-        <div v-if="compareTeam" class="compare-grid"><div><b>{{ selected.team }}</b><span>火力 {{ selected.scores.firepower }}</span><span>目标 {{ selected.scores.objective }}</span><span>防守 {{ selected.scores.defense }}</span></div><div><b>{{ compareTeam.team }}</b><span>火力 {{ compareTeam.scores.firepower }}</span><span>目标 {{ compareTeam.scores.objective }}</span><span>防守 {{ compareTeam.scores.defense }}</span></div></div>
-      </section>
-    </main>
-    <main v-else><p>{{ error || '正在加载…' }}</p></main>
-  </div>
+<div class="shell">
+  <aside><div class="brand"><span>RMUC 2026</span><strong>战术情报库 v2</strong></div><input v-model="query" placeholder="搜索队伍"><select v-model="region"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in teams" :key="t.slug" :class="{active:selected?.team===t.team}" @click="loadTeam(t.slug)"><span>{{t.team}}</span><small>{{t.wins}}/{{t.games}} · {{t.region}} · 稳定性 {{t.reliability?.grade||'—'}}</small></button></div></aside>
+  <main v-if="selected">
+    <div class="notice">仅使用规则手册实场图和通信协议 28×15m 官方坐标；行为树内部地图、区域 YAML 与 SCAU 叠加图不参与映射。</div>
+    <header><div><p>{{selected.summary.region}} <em v-if="selected.champion">{{selected.champion}}</em></p><h1>{{selected.team}}</h1></div><div class="record"><strong>{{selected.summary.wins}}–{{selected.summary.games-selected.summary.wins}}</strong><span>胜率 {{selected.summary.win_rate.toFixed(1)}}%</span></div></header>
+    <section class="kpis"><article><span>场均输出</span><strong>{{selected.summary.avg_damage_dealt?.toFixed(0)}}</strong></article><article><span>场均基地伤害</span><strong>{{selected.summary.avg_base_damage?.toFixed(0)}}</strong></article><article><span>场均前哨伤害</span><strong>{{selected.summary.avg_outpost_damage?.toFixed(0)}}</strong></article><article><span>机器可靠性</span><strong :class="`grade ${reliabilityTone(reliability?.grade)}`">{{reliability?.grade||'—'}}</strong></article></section>
+    <section class="grid-two"><article class="panel"><h2>战术分维度评分</h2><div id="score-chart" class="chart"></div></article><article class="panel"><h2>基地与其他目标伤害来源</h2><div id="damage-chart" class="chart"></div></article></section>
+    <section class="panel"><h2>机器可靠性（独立于战术评分）</h2><div class="reliability-grid"><div><b>开局完整率</b><strong>{{reliability?.start_complete_pct}}%</strong></div><div><b>在场时间率</b><strong>{{reliability?.availability_pct}}%</strong></div><div><b>高置信掉线局率</b><strong>{{reliability?.disconnect_game_pct}}%</strong></div><div><b>离线 / 恢复</b><strong>{{reliability?.offline_seconds}}s / {{reliability?.recoveries}}</strong></div></div><p class="method">A：≥99% / ≥99.5% / ≤2%；B：≥97% / ≥98% / ≤5%；C：≥95% / ≥95% / ≤10%；D：≥90% / ≥90% / ≤20%。连续 ≥5 秒每秒约扣最大血量 5% 且 ±1 秒无受击才计入评级；2–4 秒只标记疑似。</p><div class="incident-list"><button v-for="e in selected.disconnect_episodes" :key="`${e.game_id}-${e.robot_id}-${e.start_sec}`" @click="loadGame(selected.matches.find(m=>m.game_id===e.game_id))"><b>局 {{e.game_id}} · {{e.robot_type}}</b><span>{{e.classification}} {{fmtSecond(e.start_sec)}}–{{fmtSecond(e.end_sec)}} · {{e.recovered?'已恢复':'未恢复'}}</span></button><p v-if="!selected.disconnect_episodes.length">未检测到高置信或疑似主控离线片段。</p></div></section>
+    <section class="panel"><div class="section-head"><h2>秒级热力图</h2><span>真实红方 / 真实蓝方 / 己方归一化</span></div><div class="toolbar"><select v-model="heatView"><option value="actual">实际场地图</option><option value="canonical">己方归一化</option></select><select v-model="heatSide"><option>全部</option><option>红</option><option>蓝</option></select><select v-model="heatRobot"><option>全部</option><option>英雄</option><option>工程</option><option>步兵3</option><option>步兵4</option><option>空中</option><option>哨兵</option></select><label>从 <input type="number" v-model.number="heatFrom"></label><label>到 <input type="number" v-model.number="heatTo"></label></div><svg class="field" viewBox="0 0 28 15"><image :href="`${base}maps/field-current.jpg`" width="28" height="15" preserveAspectRatio="none" opacity=".55"/><rect v-for="(c,i) in filteredHeat" :key="i" :x="heatXY(c)[0]-.25" :y="heatXY(c)[1]-.25" width=".5" height=".5" fill="#00f5ff" :opacity=".08+.8*Math.sqrt(c[5]/maxHeat)"/></svg></section>
+    <section class="panel"><div class="section-head"><h2>逐局时间轴</h2><span>1 Hz · 双方全车 · 速度 / 尾迹 / 事件</span></div><div class="match-grid"><button v-for="m in selected.matches" :key="m.game_id" :class="{active:activeGame?.game_id===m.game_id}" @click="loadGame(m)"><b>{{m.won?'胜':'负'}} · {{m.opponent}}</b><span>{{m.rule_version}} · {{m.side}}方</span><small>局 {{m.game_id}} · {{fmtSecond(m.duration_sec)}}</small></button></div></section>
+    <section v-if="gameData" class="panel timeline"><div class="toolbar"><button class="play" @click="togglePlay">{{playing?'暂停':'播放'}}</button><b>{{fmtSecond(time)}} / {{fmtSecond(gameData.game.duration_sec)}}</b><select v-model.number="speed"><option :value=".5">0.5×</option><option :value="1">1×</option><option :value="2">2×</option><option :value="4">4×</option></select><label>尾迹 <input type="number" v-model.number="tail" min="3" max="120"> 秒</label><select v-model="mapMode"><option value="raster">规则实场图</option><option value="vector">官方坐标简图</option></select><select v-model="heatView"><option value="actual">实际阵营</option><option value="canonical">己方归一化</option></select></div><input class="scrubber" type="range" min="0" :max="gameData.game.duration_sec" step="1" v-model.number="time"><svg class="field" viewBox="0 0 28 15"><image :href="`${base}maps/${mapFile}`" width="28" height="15" preserveAspectRatio="none" opacity=".72"/><polyline v-for="trailItem in trails" :key="trailItem.i" :points="trailItem.points.map(p=>frameXY(p,trailItem.robot).join(',')).join(' ')" fill="none" :stroke="colors[trailItem.i%colors.length]" stroke-width=".09"/><g v-for="row in currentFrame" :key="row[0]" v-show="visibleRobots[row[0]]!==false"><circle :cx="frameXY(row,gameData.robots[row[0]])[0]" :cy="frameXY(row,gameData.robots[row[0]])[1]" r=".19" :fill="colors[row[0]%colors.length]" stroke="white" stroke-width=".04"/><text :x="frameXY(row,gameData.robots[row[0]])[0]+.25" :y="frameXY(row,gameData.robots[row[0]])[1]" font-size=".32" fill="white">{{gameData.robots[row[0]].robot_type}}</text></g></svg><div class="legend"><label v-for="(r,i) in gameData.robots" :key="i"><input type="checkbox" v-model="visibleRobots[i]"><i :style="{background:colors[i%colors.length]}"></i>{{r.side}}{{r.robot_type}} · {{r.team}}</label></div><div class="events"><button v-for="(e,i) in shownEvents.slice(-30)" :key="i" @click="time=e.second"><b>{{fmtSecond(e.second)}} {{e.type}}</b><span>{{e.team||e.detail||''}} · {{e.confidence}}</span></button></div></section>
+    <section class="panel"><h2>黄牌 / 红牌推断</h2><p class="method">源数据只有“判罚扣血”，没有牌色字段。以下按同步扣血比例标注高/中置信黄牌、推定红牌或牌色未知，不强行归类。</p><div class="penalty-table"><div v-for="p in selected.penalty_incidents" :key="`${p.game_id}-${p.second}`"><b>局 {{p.game_id}} · {{fmtSecond(p.second)}} · {{p.incident_type}}</b><span>{{p.offender_type||'对象未知'}} · 扣血 {{p.penalty_damage}} · {{p.confidence}}置信<span v-if="p.inferred_red"> · 推定红牌</span></span></div><p v-if="!selected.penalty_incidents.length">该队样本中无可识别判罚事件。</p></div></section>
+    <section class="panel"><h2>稳定战术与全队克制方案</h2><div class="patterns"><div v-for="p in selected.patterns" :key="p.pattern_id" :class="['pattern',p.classification]"><b>{{p.label}}</b><span>{{p.classification}} · {{(p.rate*100).toFixed(0)}}%</span><small>{{p.games_observed}} 局 / {{p.opponents}} 个对手</small></div></div><div class="counter" v-for="item in selected.counter_plan" :key="item.signal"><b>{{item.signal}}</b><p>{{item.action}}</p><small>退出：{{item.exit}}</small></div></section>
+    <section class="panel compare"><h2>双队对比</h2><select v-model="compareSlug"><option value="">选择另一支队伍</option><option v-for="t in index.teams.filter(t=>t.team!==selected.team)" :value="t.slug">{{t.team}}</option></select><div v-if="compareTeam" class="compare-grid"><div><b>{{selected.team}}</b><span>火力 {{selected.scores.firepower}}</span><span>可靠性 {{selected.reliability?.grade}}</span></div><div><b>{{compareTeam.team}}</b><span>火力 {{compareTeam.scores.firepower}}</span><span>可靠性 {{compareTeam.reliability?.grade}}</span></div></div></section>
+  </main><main v-else><p>{{error||'正在加载…'}}</p></main>
+</div>
 </template>
