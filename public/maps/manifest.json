@@ -1,0 +1,27 @@
+{
+  "schema_version": "2.0.0",
+  "coordinate_system": "通信协议V2.0.0表1-21，28m×15m",
+  "historical": {
+    "rules": [
+      "V1.4.2",
+      "V1.5.0"
+    ],
+    "file": "field-historical.jpg",
+    "sha256": "e04119ab11c49f3567b44c218a7df857baed048995dd6eb3448a3511d057d20a"
+  },
+  "current": {
+    "rules": [
+      "V2.0.1"
+    ],
+    "file": "field-current.jpg",
+    "sha256": "23235628fc216af2b67c3390cc4aeaea6e73db60de45c7cb2d60acb726d34e72"
+  },
+  "vector": {
+    "file": "field-vector.svg",
+    "precision": "official-coordinate schematic"
+  },
+  "excluded": [
+    "rm_behavior_tree内部地图/YAML",
+    "sentry2_scau_two_mode_tunnel_overlay.png"
+  ]
+}
