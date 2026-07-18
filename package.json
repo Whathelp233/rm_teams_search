@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "node --test && python3 -m unittest discover -s test -p 'test_*.py' && python3 scripts/audit_scores.py"
+    "test": "node --test && python3 -m unittest discover -s test -p 'test_*.py' && python3 scripts/audit_scores.py && python3 scripts/cross_validate_scores.py --fixture-only"
   },
   "dependencies": {
     "@vitejs/plugin-vue": "^5.2.4",

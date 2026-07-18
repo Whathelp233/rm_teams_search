@@ -20,12 +20,12 @@ from pathlib import Path
 MOBILE_TYPES = {"英雄", "工程", "步兵3", "步兵4", "哨兵", "空中"}
 COMBAT_CATEGORIES = {"17mm", "42mm", "飞镖"}
 DIMENSION_WEIGHTS = {
-    "firepower": 0.18,
-    "objective": 0.20,
+    "firepower": 0.20,
+    "objective": 0.25,
     "spatial": 0.15,
-    "defense": 0.19,
-    "resource": 0.13,
-    "adaptability": 0.15,
+    "defense": 0.18,
+    "resource": 0.14,
+    "adaptability": 0.08,
 }
 COMPONENT_WEIGHTS = {
     "firepower": {"clean_output": 0.30, "accuracy": 0.25, "kill_conversion": 0.25, "pressure_uptime": 0.20},
@@ -33,7 +33,7 @@ COMPONENT_WEIGHTS = {
     "spatial": {"relative_territory": 0.30, "forward_presence": 0.25, "neutral_control": 0.20, "field_coverage": 0.25},
     "defense": {"trade_resilience": 0.25, "mobile_resilience": 0.20, "outpost_denial": 0.20, "base_denial": 0.25, "collapse_resistance": 0.10},
     "resource": {"acquisition": 0.25, "utilization": 0.20, "combat_conversion": 0.20, "objective_conversion": 0.15, "thermal_efficiency": 0.20},
-    "adaptability": {"side_transfer": 0.25, "opponent_robustness": 0.20, "strong_opponent_residual": 0.25, "setback_adjustment": 0.20, "strategy_switch_effect": 0.10},
+    "adaptability": {"side_transfer": 0.25, "opponent_robustness": 0.20, "strong_opponent_residual": 0.25, "setback_adjustment": 0.20, "rematch_adjustment": 0.10},
 }
 
 
@@ -41,6 +41,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=Path("../sql/rmuc_2026_region_dataset.sqlite"))
     parser.add_argument("--data", type=Path, default=Path("public/data"))
+    parser.add_argument("--backtest", action="store_true", help="score a historical subset without inferring final placements")
     return parser.parse_args()
 
 
@@ -223,7 +224,13 @@ def main():
             game_teams.setdefault(match["game_id"], {})[team] = match["opponent"]
     teams = list(payloads)
     games_by_team = {team: len(payload["matches"]) for team, (_, payload) in payloads.items()}
-    win_rates = {team: float(payload["summary"]["win_rate"]) for team, (_, payload) in payloads.items()}
+    # Derive opponent strength only from the matches present in this scoring
+    # run. This is equivalent to the published summary on the full dataset,
+    # and prevents future results leaking into chronological backtests.
+    win_rates = {
+        team: 100.0 * sum(bool(match.get("won")) for match in payload["matches"]) / max(1, len(payload["matches"]))
+        for team, (_, payload) in payloads.items()
+    }
 
     connection = sqlite3.connect(args.db)
     connection.row_factory = sqlite3.Row
@@ -295,9 +302,9 @@ def main():
     for row in connection.execute(query):
         hp[(row["game_id"], row["team"])] = dict(row)
 
-    game_results = list(connection.execute(
+    game_results = [row for row in connection.execute(
         "SELECT game_id,赛区 region,场次号 series_no,红方学校 red,蓝方学校 blue,胜方 winner,开始时间 started FROM matches ORDER BY 开始时间,game_id"
-    ))
+    ) if row["game_id"] in game_teams]
     connection.close()
 
     clean_output_baseline = {}
@@ -314,7 +321,6 @@ def main():
 
     fire_raw, objective_raw, spatial_raw, defense_raw, resource_raw = {}, {}, {}, {}, {}
     performance_by_match = {}
-    match_modes = defaultdict(dict)
     excluded = {}
     for team, (_, payload) in payloads.items():
         fire = defaultdict(list); objective = defaultdict(list); spatial = defaultdict(list)
@@ -399,13 +405,6 @@ def main():
             resource["thermal_efficiency"].append(robot_dealt / (1.0 + hot))
 
             performance_by_match[(game_id, team)] = (robot_dealt + 0.8 * opp_in["outpost"] + 1.2 * opp_in["base"]) * 420.0 / duration
-            match_modes[(game_id, team)] = {
-                "early_outpost": first_outpost is not None and first_outpost <= 90,
-                "base_42": source_damage[(game_id, team)]["base_42mm"] > 0,
-                "dart": float(match.get("dart_hits") or 0) > 0,
-                "rune": float(match.get("rune_events") or 0) > 0,
-                "radar": float(match.get("radar_counter_events") or 0) > 0,
-            }
             penalty += own_in["penalty"]; collision += own_in["collision"]
         fire_raw[team] = {key: mean(fire[key]) for key in COMPONENT_WEIGHTS["firepower"]}
         objective_raw[team] = {key: mean(objective[key]) for key in COMPONENT_WEIGHTS["objective"]}
@@ -457,25 +456,29 @@ def main():
         side_transfer = None if side_n == 0 else -abs(red_mean - blue_mean)
         opponent_means = [mean(values) for values in by_opponent.values()]
         opponent_robustness = None if opponent_n < 3 else quantile(opponent_means, 0.25) - statistics.median(opponent_means)
-        variant_effects = []
-        evidence_pairs = 0
-        for mode in ("early_outpost", "base_42", "dart", "rune", "radar"):
-            active = [conditional_perf[(match["game_id"], team)] for match in payload["matches"] if match_modes[(match["game_id"], team)].get(mode)]
-            inactive = [conditional_perf[(match["game_id"], team)] for match in payload["matches"] if not match_modes[(match["game_id"], team)].get(mode)]
-            if len(active) >= 2 and len(inactive) >= 2:
-                evidence_pairs += 2 * min(len(active), len(inactive))
-                variant_effects.append(max(-30.0, min(30.0, mean(active) - mean(inactive))))
+        rematch_adjustments = []
+        matches_by_opponent = defaultdict(list)
+        for match in payload["matches"]:
+            matches_by_opponent[match["opponent"]].append(match)
+        for opponent_matches in matches_by_opponent.values():
+            ordered = sorted(opponent_matches, key=lambda match: (match.get("started_at") or "", match["game_id"]))
+            for previous, current in zip(ordered, ordered[1:]):
+                if bool(previous.get("won")):
+                    continue
+                previous_value = conditional_perf[(previous["game_id"], team)]
+                current_value = conditional_perf[(current["game_id"], team)]
+                rematch_adjustments.append(max(-40.0, min(40.0, current_value - previous_value)))
         adaptation_raw[team] = {
             "side_transfer": side_transfer,
             "opponent_robustness": opponent_robustness,
             "strong_opponent_residual": typical_with_floor(strong_residual, None),
             "setback_adjustment": typical_with_floor(setback, None),
-            "strategy_switch_effect": mean(variant_effects, None),
+            "rematch_adjustment": typical_with_floor(rematch_adjustments, None),
         }
         adaptation_samples[team] = {
             "side_transfer": side_n * 2, "opponent_robustness": opponent_n,
             "strong_opponent_residual": len(strong_residual), "setback_adjustment": len(setback),
-            "strategy_switch_effect": min(games_by_team[team], evidence_pairs),
+            "rematch_adjustment": len(rematch_adjustments),
         }
 
     raw_dimensions = {"firepower": fire_raw, "objective": objective_raw, "spatial": spatial_raw, "defense": defense_raw, "resource": resource_raw}
@@ -502,7 +505,7 @@ def main():
         for team in teams:
             ratings[team] -= center
     rating_values = list(ratings.values())
-    placements = infer_placements(game_results)
+    placements = {} if args.backtest else infer_placements(game_results)
     dimension_ranks = {
         team: {
             dimension: 1 + sum(analyses[dimension][other]["score"] > analyses[dimension][team]["score"] for other in teams)
@@ -515,11 +518,11 @@ def main():
         team: sum(analyses[name][team]["score"] * DIMENSION_WEIGHTS[name] for name in DIMENSION_WEIGHTS)
         for team in teams
     }
-    strength_scores = {team: 0.75 * tactical_scores[team] + 0.25 * result_scores[team] for team in teams}
+    strength_scores = {team: 0.90 * tactical_scores[team] + 0.10 * result_scores[team] for team in teams}
     overall_ranks = {team: 1 + sum(strength_scores[other] > strength_scores[team] for other in teams) for team in teams}
 
-    index["schema_version"] = "3.2.0"
-    index["data_version"] = "score-3.2.0"
+    index["schema_version"] = "3.3.0"
+    index["data_version"] = "score-3.3.0"
     index["placement_method"] = {
         "format": "参赛手册规定的16进8、8进4、半决赛、季军争夺战和冠军争夺战，结合数据库实际胜负推导",
         "sources": [
@@ -528,7 +531,7 @@ def main():
             "RMUC 2026 北部赛区参赛手册 V2.0.0",
         ],
     }
-    index["scoring_notice"] = "六维3.2：目标与防守权重上调、空间权重下调；适应只衡量条件迁移；综合强度含正则化赛程强度"
+    index["scoring_notice"] = "六维3.3：滚动时间回测校准；适应改为真实败局后再战调整；赛果权重降至10%"
     for team, (path, payload) in payloads.items():
         scores = {name: analyses[name][team]["score"] for name in COMPONENT_WEIGHTS}
         tactical, result, strength = tactical_scores[team], result_scores[team], strength_scores[team]
@@ -536,7 +539,7 @@ def main():
         invalid_points = sum(float(match.get("invalid_position_points") or 0) for match in payload["matches"])
         position_coverage = position_points / max(1.0, position_points + invalid_points)
         confidence = 100.0 * games_by_team[team] / (games_by_team[team] + 8.0) * math.sqrt(position_coverage)
-        payload["schema_version"] = "3.2.0"; payload["data_version"] = "score-3.2.0"
+        payload["schema_version"] = "3.3.0"; payload["data_version"] = "score-3.3.0"
         payload.pop("consistency_analysis", None)
         payload["scores"] = scores
         payload["dimension_ranks"] = dimension_ranks[team]
@@ -548,7 +551,7 @@ def main():
             method = "absolute-anchor and percentile blend with typical/downside aggregation" if name == "defense" else "team fact percentile with games/(games+6) shrinkage"
             if name == "adaptability":
                 method = "paired-condition transfer and residual response with component-specific evidence shrinkage"
-            detail.update({"version": "3.2.0", "method": method})
+            detail.update({"version": "3.3.0", "method": method})
             payload[f"{name}_analysis"] = detail
         payload["defense_analysis"]["excluded"] = excluded[team]
         payload["score_confidence"] = {
@@ -556,9 +559,9 @@ def main():
             "position_coverage_pct": rounded(position_coverage * 100), "enters_score": False,
         }
         payload["strength_analysis"] = {
-            "version": "3.2.0", "score": rounded(strength), "tactical_score": rounded(tactical),
+            "version": "3.3.0", "score": rounded(strength), "tactical_score": rounded(tactical),
             "result_score": rounded(result), "schedule_rating": rounded(ratings[team], 3),
-            "tactical_weight": 0.75, "result_weight": 0.25,
+            "tactical_weight": 0.90, "result_weight": 0.10,
             "tactical_dimension_weights": DIMENSION_WEIGHTS,
             "model": "regularized Bradley-Terry with red-side intercept",
             "red_side_intercept": rounded(side_bias, 3),
@@ -571,7 +574,7 @@ def main():
         listing["placement"] = placements.get(team)
         compact_write(path, payload)
     compact_write(index_path, index)
-    print(f"recalculated {len(teams)} teams with score schema 3.2.0")
+    print(f"recalculated {len(teams)} teams with score schema 3.3.0")
 
 
 if __name__ == "__main__":

@@ -5,18 +5,18 @@ import { teamStrength } from '../src/domain.js'
 
 const readJson = path => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'))
 
-test('all published teams use complete score schema 3.2', () => {
+test('all published teams use complete score schema 3.3', () => {
   const index = readJson('../public/data/index.json')
-  assert.equal(index.schema_version, '3.2.0')
-  assert.equal(index.data_version, 'score-3.2.0')
+  assert.equal(index.schema_version, '3.3.0')
+  assert.equal(index.data_version, 'score-3.3.0')
   assert.equal(index.teams.length, 96)
   const dimensions = ['firepower', 'objective', 'spatial', 'defense', 'resource', 'adaptability']
-  const tacticalWeights = { firepower: .18, objective: .20, spatial: .15, defense: .19, resource: .13, adaptability: .15 }
+  const tacticalWeights = { firepower: .20, objective: .25, spatial: .15, defense: .18, resource: .14, adaptability: .08 }
   const placementCounts = {}
   for (const listing of index.teams) {
     const team = readJson(`../public/data/teams/${listing.slug}.json`)
-    assert.equal(team.schema_version, '3.2.0', listing.team)
-    assert.equal(team.data_version, 'score-3.2.0', listing.team)
+    assert.equal(team.schema_version, '3.3.0', listing.team)
+    assert.equal(team.data_version, 'score-3.3.0', listing.team)
     assert.equal('consistency_analysis' in team, false, listing.team)
     assert.equal(team.overall_rank, listing.overall_rank, listing.team)
     assert.deepEqual(team.strength_analysis.tactical_dimension_weights, tacticalWeights, listing.team)
@@ -24,7 +24,7 @@ test('all published teams use complete score schema 3.2', () => {
     if (team.placement) placementCounts[team.placement.label] = (placementCounts[team.placement.label] || 0) + 1
     for (const dimension of dimensions) {
       const detail = team[`${dimension}_analysis`]
-      assert.equal(detail.version, '3.2.0', `${listing.team} ${dimension}`)
+      assert.equal(detail.version, '3.3.0', `${listing.team} ${dimension}`)
       assert.ok(team.dimension_ranks[dimension] >= 1 && team.dimension_ranks[dimension] <= 96, `${listing.team} ${dimension} rank`)
       assert.equal(team.dimension_ranks[dimension], listing.dimension_ranks[dimension], `${listing.team} ${dimension} listing rank`)
       const reconstructed = Object.entries(detail.weights)
@@ -46,6 +46,6 @@ test('defense is bounded and adaptability is condition-based rather than a resul
   assert.ok(Math.max(...defense) - Math.min(...defense) < 40)
   for (const team of teams) {
     assert.deepEqual(Object.keys(team.defense_analysis.weights), ['trade_resilience', 'mobile_resilience', 'outpost_denial', 'base_denial', 'collapse_resistance'])
-    assert.deepEqual(Object.keys(team.adaptability_analysis.weights), ['side_transfer', 'opponent_robustness', 'strong_opponent_residual', 'setback_adjustment', 'strategy_switch_effect'])
+    assert.deepEqual(Object.keys(team.adaptability_analysis.weights), ['side_transfer', 'opponent_robustness', 'strong_opponent_residual', 'setback_adjustment', 'rematch_adjustment'])
   }
 })

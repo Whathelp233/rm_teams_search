@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""Rolling-origin audit for score and matchup calibration.
+
+Each fold scores only matches already played in every region, then predicts the
+next chronological block. This keeps future tactical facts and results out of
+the training payload and exposes in-sample improvements that do not generalize.
+"""
+
+import argparse
+import json
+import math
+import subprocess
+import sys
+import tempfile
+from collections import Counter, defaultdict
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+DATA = ROOT / "public" / "data"
+DB = ROOT.parent / "sql" / "rmuc_2026_region_dataset.sqlite"
+FIXTURE = ROOT / "test" / "fixtures" / "rolling_score_folds.json"
+REGIONS = ("南部赛区", "东部赛区", "北部赛区")
+FOLDS = ((0.55, 0.70), (0.70, 0.85), (0.85, 1.00))
+RELEASE_RESULT_WEIGHT = 0.10
+RELEASE_SCALES = {"南部赛区": 16.0, "东部赛区": 10.0, "北部赛区": 24.0}
+DIMENSION_WEIGHTS = {
+    "firepower": 0.20, "objective": 0.25, "spatial": 0.15,
+    "defense": 0.18, "resource": 0.14, "adaptability": 0.08,
+}
+WEIGHT_CANDIDATES = {
+    "current": DIMENSION_WEIGHTS,
+    "legacy_3_2": {"firepower": 0.18, "objective": 0.20, "spatial": 0.15, "defense": 0.19, "resource": 0.13, "adaptability": 0.15},
+    "conservative": {"firepower": 0.20, "objective": 0.25, "spatial": 0.15, "defense": 0.16, "resource": 0.14, "adaptability": 0.10},
+    "objective_focus": {"firepower": 0.20, "objective": 0.28, "spatial": 0.14, "defense": 0.15, "resource": 0.14, "adaptability": 0.09},
+}
+
+
+def probability(first, second, region):
+    scale = RELEASE_SCALES[region]
+    return 1.0 / (1.0 + math.exp(-(first - second) / scale))
+
+
+def metrics(rows):
+    if not rows:
+        return {"games": 0, "brier": None, "log_loss": None, "accuracy": None}
+    outcomes = [float(row[1]) for row in rows]
+    probabilities = [min(1 - 1e-9, max(1e-9, row[0])) for row in rows]
+    return {
+        "games": len(rows),
+        "brier": sum((p - y) ** 2 for p, y in zip(probabilities, outcomes)) / len(rows),
+        "log_loss": -sum(y * math.log(p) + (1 - y) * math.log(1 - p) for p, y in zip(probabilities, outcomes)) / len(rows),
+        "accuracy": sum((p >= 0.5) == bool(y) for p, y in zip(probabilities, outcomes)) / len(rows),
+    }
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--write-fixture", action="store_true", help="regenerate the derived CI fixture from the private SQLite source")
+    parser.add_argument("--fixture-only", action="store_true", help="audit the committed derived fixture without opening SQLite")
+    return parser.parse_args()
+
+
+def load_source():
+    index = json.loads((DATA / "index.json").read_text(encoding="utf-8"))
+    payloads = {}
+    games = {}
+    for listing in index["teams"]:
+        payload = json.loads((DATA / "teams" / f"{listing['slug']}.json").read_text(encoding="utf-8"))
+        payloads[payload["team"]] = (listing["slug"], payload)
+        for match in payload["matches"]:
+            games.setdefault(match["game_id"], {
+                "game_id": match["game_id"], "region": match["region"], "started_at": match["started_at"],
+                "primary": payload["team"], "opponent": match["opponent"], "won": bool(match["won"]),
+            })
+    regional = {region: sorted((game for game in games.values() if game["region"] == region), key=lambda game: (game["started_at"], game["game_id"])) for region in REGIONS}
+    return index, payloads, regional
+
+
+def score_fold(index, payloads, train_ids, directory):
+    data = directory / "data"
+    teams_dir = data / "teams"
+    teams_dir.mkdir(parents=True)
+    (data / "index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
+    counts = Counter()
+    for team, (slug, payload) in payloads.items():
+        filtered = dict(payload)
+        filtered["matches"] = [match for match in payload["matches"] if match["game_id"] in train_ids]
+        counts[team] = len(filtered["matches"])
+        (teams_dir / f"{slug}.json").write_text(json.dumps(filtered, ensure_ascii=False), encoding="utf-8")
+    subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "recalculate_scores.py"), "--db", str(DB), "--data", str(data), "--backtest"],
+        cwd=ROOT, check=True, stdout=subprocess.DEVNULL,
+    )
+    scored = {}
+    for team, (slug, _) in payloads.items():
+        payload = json.loads((teams_dir / f"{slug}.json").read_text(encoding="utf-8"))
+        scored[team] = {"strength": payload["strength_analysis"], "scores": payload["scores"]}
+    return scored, counts
+
+
+def build_records():
+    index, payloads, regional = load_source()
+    records = []
+    with tempfile.TemporaryDirectory(prefix="rmuc-score-cv-") as temporary:
+        root = Path(temporary)
+        for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1):
+            train_ids, tests = set(), []
+            for region, games in regional.items():
+                train_end = round(len(games) * train_fraction)
+                test_end = round(len(games) * test_fraction)
+                train_ids.update(game["game_id"] for game in games[:train_end])
+                tests.extend(games[train_end:test_end])
+            fold_dir = root / f"fold-{fold_number}"
+            scored, counts = score_fold(index, payloads, train_ids, fold_dir)
+            eligible = [game for game in tests if counts[game["primary"]] >= 3 and counts[game["opponent"]] >= 3]
+            for game in eligible:
+                first, second = scored[game["primary"]], scored[game["opponent"]]
+                first_strength, second_strength = first["strength"], second["strength"]
+                records.append({
+                    "fold": fold_number, "region": game["region"], "won": game["won"],
+                    "dimension_diff": {dimension: round(first["scores"][dimension] - second["scores"][dimension], 3) for dimension in DIMENSION_WEIGHTS},
+                    "result_diff": round(first_strength["result_score"] - second_strength["result_score"], 3),
+                })
+    return records
+
+
+def main():
+    args = parse_args()
+    if DB.exists() and not args.fixture_only:
+        records = build_records()
+        if args.write_fixture:
+            FIXTURE.parent.mkdir(parents=True, exist_ok=True)
+            FIXTURE.write_text(json.dumps({"schema_version": "3.3.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    else:
+        fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        if fixture.get("schema_version") != "3.3.0":
+            raise SystemExit("rolling score fixture does not match score schema 3.3.0")
+        records = fixture["records"]
+
+    rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
+    observations = defaultdict(list)
+    fold_rows = defaultdict(list)
+    for record in records:
+        dimension_diff = record["dimension_diff"]
+        result_diff = record["result_diff"]
+        tactical_diff = sum(dimension_diff[key] * weight for key, weight in DIMENSION_WEIGHTS.items())
+        strength_diff = (1 - RELEASE_RESULT_WEIGHT) * tactical_diff + RELEASE_RESULT_WEIGHT * result_diff
+        model_diffs = {"strength": strength_diff, "tactical": tactical_diff, "result": result_diff}
+        for model, difference in model_diffs.items():
+            row = (probability(difference, 0.0, record["region"]), record["won"])
+            rows[model][record["region"]].append(row)
+            if model == "strength":
+                fold_rows[record["fold"]].append(row)
+        observations[record["region"]].append((dimension_diff, result_diff, record["won"]))
+    fold_report = [
+        {"fold": fold_number, "train_fraction": train_fraction, "test_fraction": test_fraction, **metrics(fold_rows[fold_number])}
+        for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
+    ]
+
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "weight_candidates": {}, "dimension_ablation": {}, "blend_grid": {}}
+    failures = []
+    for region in REGIONS:
+        report["regions"][region] = {model: metrics(rows[model][region]) for model in rows}
+        strength = report["regions"][region]["strength"]
+        if strength["games"] < 50:
+            failures.append(f"{region} has only {strength['games']} eligible chronological test games")
+    for model in rows:
+        combined = [row for region in REGIONS for row in rows[model][region]]
+        report["overall"][model] = metrics(combined)
+    candidate_all = []
+    for region in REGIONS:
+        scale = RELEASE_SCALES[region]
+        candidate_rows = [
+            (1.0 / (1.0 + math.exp(-((1 - RELEASE_RESULT_WEIGHT) * sum(dimension_diff[key] * weight for key, weight in DIMENSION_WEIGHTS.items()) + RELEASE_RESULT_WEIGHT * result_diff) / scale)), won)
+            for dimension_diff, result_diff, won in observations[region]
+        ]
+        report["candidate"][region] = {"result_weight": RELEASE_RESULT_WEIGHT, "scale": scale, **metrics(candidate_rows)}
+        candidate_all.extend(candidate_rows)
+        if report["candidate"][region]["brier"] >= 0.25:
+            failures.append(f"{region} candidate chronological Brier {report['candidate'][region]['brier']:.3f} >= 0.25")
+        if report["candidate"][region]["log_loss"] >= 0.70:
+            failures.append(f"{region} candidate chronological log loss {report['candidate'][region]['log_loss']:.3f} >= 0.70")
+        if report["candidate"][region]["accuracy"] < 0.55:
+            failures.append(f"{region} candidate chronological accuracy {report['candidate'][region]['accuracy']:.3f} < 0.55")
+    report["candidate"]["全部"] = metrics(candidate_all)
+    if report["candidate"]["全部"]["brier"] >= 0.24:
+        failures.append(f"overall candidate chronological Brier {report['candidate']['全部']['brier']:.3f} >= 0.24")
+    if report["candidate"]["全部"]["accuracy"] < 0.60:
+        failures.append(f"overall candidate chronological accuracy {report['candidate']['全部']['accuracy']:.3f} < 0.60")
+    for name, candidate_weights in WEIGHT_CANDIDATES.items():
+        candidate_rows = []
+        regional_metrics = {}
+        for region in REGIONS:
+            scale = RELEASE_SCALES[region]
+            regional_rows = [
+                (1.0 / (1.0 + math.exp(-((1 - RELEASE_RESULT_WEIGHT) * sum(dimension_diff[key] * weight for key, weight in candidate_weights.items()) + RELEASE_RESULT_WEIGHT * result_diff) / scale)), won)
+                for dimension_diff, result_diff, won in observations[region]
+            ]
+            regional_metrics[region] = metrics(regional_rows)
+            candidate_rows.extend(regional_rows)
+        report["weight_candidates"][name] = {"regions": regional_metrics, "overall": metrics(candidate_rows)}
+    for removed in (None, *DIMENSION_WEIGHTS):
+        weights = {key: value for key, value in DIMENSION_WEIGHTS.items() if key != removed}
+        total = sum(weights.values())
+        weights = {key: value / total for key, value in weights.items()}
+        ablation_rows = []
+        for region in REGIONS:
+            scale = RELEASE_SCALES[region]
+            ablation_rows.extend([
+                (1.0 / (1.0 + math.exp(-((1 - RELEASE_RESULT_WEIGHT) * sum(dimension_diff[key] * weight for key, weight in weights.items()) + RELEASE_RESULT_WEIGHT * result_diff) / scale)), won)
+                for dimension_diff, result_diff, won in observations[region]
+            ])
+        report["dimension_ablation"]["all" if removed is None else f"without_{removed}"] = metrics(ablation_rows)
+    for result_weight in (0.0, 0.05, 0.10, 0.15, 0.20, 0.25):
+        regional_best = {}
+        combined_rows = []
+        for region in REGIONS:
+            candidates = []
+            for scale in range(8, 31):
+                candidate_rows = [
+                    (1.0 / (1.0 + math.exp(-((1 - result_weight) * sum(dimension_diff[key] * weight for key, weight in DIMENSION_WEIGHTS.items()) + result_weight * result_diff) / scale)), won)
+                    for dimension_diff, result_diff, won in observations[region]
+                ]
+                candidates.append((metrics(candidate_rows)["brier"], scale, candidate_rows))
+            best_brier, best_scale, best_rows = min(candidates, key=lambda item: item[0])
+            regional_best[region] = {"scale": best_scale, "brier": best_brier}
+            combined_rows.extend(best_rows)
+        report["blend_grid"][f"result_{result_weight:.2f}"] = {
+            "regional_best": regional_best, "overall": metrics(combined_rows),
+        }
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    if failures:
+        raise SystemExit("cross-validation audit failed:\n- " + "\n- ".join(failures))
+
+
+if __name__ == "__main__":
+    main()
