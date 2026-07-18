@@ -67,7 +67,12 @@ def main():
     for team in teams:
         actual = team["strength_analysis"]["tactical_dimension_weights"]
         if actual != expected_dimension_weights:
-            failures.append(f"{team['team']} tactical dimension weights differ from score 3.7")
+            failures.append(f"{team['team']} tactical dimension weights differ from score 3.8")
+        opponent = team.get("opponent_score_analysis", {})
+        if opponent.get("enters_strength") is not False or opponent.get("strength_coefficient") != 0.0:
+            failures.append(f"{team['team']} transparent opponent score must not duplicate BT strength correction")
+        if opponent.get("direct_matches_excluded") is not True:
+            failures.append(f"{team['team']} opponent score does not exclude direct meetings")
     for region in ("南部赛区", "东部赛区", "北部赛区"):
         regional = [team for team in teams if team["summary"]["region"] == region]
         strength = [team["strength_analysis"]["score"] for team in regional]

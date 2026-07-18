@@ -166,6 +166,7 @@ export function summarizeDimensions(team) {
     spatial: team?.spatial_analysis || null,
     defense: team?.defense_analysis || null,
     strength: team?.strength_analysis || null,
+    opponentScore: team?.opponent_score_analysis || null,
     consistency: team?.consistency_analysis || null,
     confidence: team?.score_confidence || null,
     dimensionConfidence: team?.dimension_confidence || null,
