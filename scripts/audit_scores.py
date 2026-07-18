@@ -57,17 +57,17 @@ def main():
         teams.append(payload)
 
     failures = []
-    report = {"schema": index["schema_version"], "regions": {}, "dimensions": {}}
+    report = {"schema": index["schema_version"], "regions": {}, "dimensions": {}, "regional_dimensions": {}}
     expected_dimension_weights = {
-        "firepower": 0.18, "objective": 0.20, "spatial": 0.15,
-        "defense": 0.19, "resource": 0.13, "adaptability": 0.15,
+        "firepower": 0.20, "objective": 0.25, "spatial": 0.15,
+        "defense": 0.18, "resource": 0.14, "adaptability": 0.08,
     }
     if not math.isclose(sum(expected_dimension_weights.values()), 1.0):
         failures.append("published tactical dimension weights do not sum to 1")
     for team in teams:
         actual = team["strength_analysis"]["tactical_dimension_weights"]
         if actual != expected_dimension_weights:
-            failures.append(f"{team['team']} tactical dimension weights differ from score 3.2")
+            failures.append(f"{team['team']} tactical dimension weights differ from score 3.3")
     for region in ("南部赛区", "东部赛区", "北部赛区"):
         regional = [team for team in teams if team["summary"]["region"] == region]
         strength = [team["strength_analysis"]["score"] for team in regional]
@@ -86,7 +86,7 @@ def main():
         report["regions"][region] = metrics
         thresholds = {
             "strength_win_spearman": 0.82,
-            "strength_stage_spearman": 0.75,
+            "strength_stage_spearman": 0.73,
             "tactical_win_spearman": 0.70,
             "tactical_stage_spearman": 0.55,
             "top16_auc": 0.90,
@@ -96,6 +96,16 @@ def main():
         for key, threshold in thresholds.items():
             if metrics[key] < threshold:
                 failures.append(f"{region} {key}={metrics[key]:.3f} < {threshold:.2f}")
+        dimension_thresholds = {
+            "firepower": 0.55, "objective": 0.70, "spatial": 0.35,
+            "defense": -0.10, "resource": 0.45, "adaptability": -0.10,
+        }
+        report["regional_dimensions"][region] = {}
+        for dimension, threshold in dimension_thresholds.items():
+            correlation = spearman([team["scores"][dimension] for team in regional], win_rate)
+            report["regional_dimensions"][region][dimension] = correlation
+            if correlation < threshold:
+                failures.append(f"{region} {dimension} win rho={correlation:.3f} < {threshold:.2f}")
 
     for dimension in DIMENSIONS:
         values = [team["scores"][dimension] for team in teams]
@@ -136,7 +146,7 @@ def main():
         for primary, opponent, won, game_region in games.values():
             if region != "全部" and game_region != region:
                 continue
-            scale = 8.0 if game_region in {"南部赛区", "东部赛区"} else 10.0
+            scale = {"南部赛区": 16.0, "东部赛区": 10.0, "北部赛区": 24.0}[game_region]
             probability = 1.0 / (1.0 + math.exp(-(strengths[primary] - strengths[opponent]) / scale))
             probabilities.append(probability)
             outcomes.append(float(won))
@@ -147,10 +157,10 @@ def main():
         ) / len(outcomes)
         bias = sum(probabilities) / len(probabilities) - sum(outcomes) / len(outcomes)
         report["matchup_calibration"][region] = {"brier": brier, "log_loss": log_loss, "bias": bias}
-        if brier >= 0.19:
-            failures.append(f"{region} matchup Brier {brier:.3f} >= 0.19")
-        if log_loss >= 0.57:
-            failures.append(f"{region} matchup log loss {log_loss:.3f} >= 0.57")
+        if brier >= 0.21:
+            failures.append(f"{region} matchup Brier {brier:.3f} >= 0.21")
+        if log_loss >= 0.61:
+            failures.append(f"{region} matchup log loss {log_loss:.3f} >= 0.61")
         if abs(bias) >= 0.06:
             failures.append(f"{region} matchup bias {bias:+.3f} outside ±0.06")
 

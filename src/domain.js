@@ -60,12 +60,12 @@ export function densityOpacity(samples, maximum) {
 }
 
 const tacticalWeights = {
-  firepower: .18,
-  objective: .20,
+  firepower: .20,
+  objective: .25,
   spatial: .15,
-  defense: .19,
-  resource: .13,
-  adaptability: .15,
+  defense: .18,
+  resource: .14,
+  adaptability: .08,
 }
 
 function finite(value, fallback = 0) {
@@ -176,7 +176,7 @@ export function teamStrength(team) {
     (total, [key, weight]) => total + finite(team?.scores?.[key]) * weight, 0,
   )
   const result = finite(team?.strength_analysis?.result_score, finite(team?.summary?.win_rate ?? team?.win_rate))
-  return .75 * tactical + .25 * result
+  return .90 * tactical + .10 * result
 }
 
 export function strengthGrade(score) {
@@ -200,9 +200,11 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
   const opponentStrength = teamStrength(opponent)
   const primaryRegion = primary?.summary?.region || primary?.region
   const opponentRegion = opponent?.summary?.region || opponent?.region
-  const regionalScale = primaryRegion === opponentRegion && ['南部赛区', '东部赛区'].includes(primaryRegion) ? 8 : 10
-  // South/East calibrate near 8 and North near 10 on the 613-match sample.
-  // Cross-region comparisons retain the more conservative scale 10.
+  const regionalScale = primaryRegion === opponentRegion
+    ? ({ 南部赛区: 16, 东部赛区: 10, 北部赛区: 24 }[primaryRegion] || 20)
+    : 20
+  // Rolling-origin backtests favor wider uncertainty in South and North.
+  // Cross-region comparisons have no direct sample and remain conservative.
   let probability = 1 / (1 + Math.exp(-(primaryStrength - opponentStrength) / regionalScale))
   const h2hGames = headToHead.length
   const h2hWins = headToHead.filter(match => Boolean(match.won)).length
