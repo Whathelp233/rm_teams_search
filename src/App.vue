@@ -4,11 +4,11 @@ import { init, use } from 'echarts/core'
 import { BarChart, RadarChart } from 'echarts/charts'
 import { GridComponent, RadarComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { aggregateHeatCells, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, roleMetrics, strengthGrade, summarizeDimensions, swissNextPairings, swissStandings, teamPerspectivePoint, teamStrength } from './domain.js'
+import { aggregateHeatCells, densityOpacity, doubleEliminationNextPairings, doubleEliminationStandings, matchupEstimate, monteCarloTournament, officialToMap, predictedWinner, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, roleMetrics, seriesWinProbability, strengthGrade, summarizeDimensions, swissNextPairings, swissStandings, teamPerspectivePoint, teamStrength } from './domain.js'
 
 use([BarChart, RadarChart, GridComponent, RadarComponent, TooltipComponent, CanvasRenderer])
 const base = import.meta.env.BASE_URL
-const dataRevision = 'score-3.9.0-role-data-1.1.0-tournament-2.0.0'
+const dataRevision = 'score-3.9.0-role-data-1.1.0-tournament-3.0.0'
 const index = ref({ teams: [] }), selected = ref(null), query = ref(''), region = ref('全部'), error = ref('')
 const heat = ref(null), heatSide = ref('全部'), heatRobot = ref('全部'), heatView = ref('actual'), heatFrom = ref(0), heatTo = ref(420), heatMaskOpacity = ref(.34)
 const gameData = ref(null), activeGame = ref(null), time = ref(0), playing = ref(false), speed = ref(1), tail = ref(20), mapMode = ref('raster'), routeView = ref('actual')
@@ -16,6 +16,7 @@ const visibleRobots = ref({}), compareSlug = ref(''), compareTeam = ref(null)
 const viewMode = ref('team'), roleCatalog = ref({ roles: [] }), selectedRoleSlug = ref('hero'), roleIndex = ref(null), roleTeam = ref(null)
 const roleRegion = ref('全部'), roleQuery = ref(''), roleMetric = ref('availability_pct'), activeRoleGameId = ref(null), roleTime = ref(0)
 const tournamentConfig = ref(null), tournamentMode = ref('repechage'), tournamentTeams = ref({ repechage: [], finals: [] }), tournamentGroups = ref({ repechage: [[], []], finals: [[], []] }), tournamentRounds = ref({ repechage: { A: [], B: [] }, finals: { A: [], B: [] } }), finalsQualifiers = ref([null, null, null, null]), tournamentBusy = ref(false)
+const tournamentPredictionMode = ref('random'), tournamentPlayoffs = ref({ repechage: [], finals: [] }), tournamentMedals = ref({ semifinals: [], final: null, bronze: null }), tournamentOdds = ref({ repechage: [], finals: [] }), tournamentOddsBusy = ref(false)
 const tournamentLabels = ['A', 'B']
 let scoreChart, damageChart, timer
 const colors = ['#ff5268','#ff9e54','#ffd166','#9b7bff','#ef70cb','#ff355f','#48a8ff','#58d3ff','#41e1a6','#6f8dff','#61b8ff','#16c7e8']
@@ -91,6 +92,9 @@ const tournamentBoards = computed(() => (tournamentGroups.value[tournamentMode.v
   const label = tournamentLabels[index], rounds = tournamentRounds.value[tournamentMode.value]?.[label] || []
   return { label, members, rounds, standings: swissStandings(members, rounds, activeTournament.value?.win_target, activeTournament.value?.loss_target, activeTournament.value?.swiss_rounds) }
 }))
+const tournamentSwissFinished = computed(() => tournamentBoards.value.length === 2 && tournamentBoards.value.every(board => board.rounds.length === activeTournament.value?.swiss_rounds && board.rounds.every(round => round.matches.every(match => match.winner))))
+const activePlayoffStages = computed(() => tournamentPlayoffs.value[tournamentMode.value] || [])
+const activeTournamentOdds = computed(() => tournamentOdds.value[tournamentMode.value] || [])
 const shownEvents = computed(() => (gameData.value?.events || []).filter(e => e.second <= time.value))
 const currentFrame = computed(() => {
   const frames = gameData.value?.frames || []; let found = []
@@ -147,7 +151,12 @@ function roleFramePoint(frame) {
 }
 function fetchData(path) { return fetch(`${base}${path}?v=${dataRevision}`, { cache: 'no-store' }) }
 function saveTournament() {
-  localStorage.setItem('rmuc-tournament-pickem-2', JSON.stringify({ groups: tournamentGroups.value, rounds: tournamentRounds.value, finalsQualifiers: finalsQualifiers.value }))
+  localStorage.setItem('rmuc-tournament-pickem-3', JSON.stringify({ groups: tournamentGroups.value, rounds: tournamentRounds.value, finalsQualifiers: finalsQualifiers.value, playoffs: tournamentPlayoffs.value, medals: tournamentMedals.value, predictionMode: tournamentPredictionMode.value }))
+}
+function clearTournamentPostseason(mode = tournamentMode.value) {
+  tournamentPlayoffs.value = { ...tournamentPlayoffs.value, [mode]: [] }
+  if (mode === 'finals') tournamentMedals.value = { semifinals: [], final: null, bronze: null }
+  tournamentOdds.value = { ...tournamentOdds.value, [mode]: [] }
 }
 function shuffle(values) {
   const result = [...values]
@@ -180,6 +189,7 @@ function moveTournamentTeam(team, targetIndex) {
 }
 function resetTournamentResults() {
   tournamentRounds.value = { ...tournamentRounds.value, [tournamentMode.value]: { A: [], B: [] } }
+  clearTournamentPostseason()
   saveTournament()
 }
 function startSwissRound(board) {
@@ -191,8 +201,10 @@ function startSwissRound(board) {
 }
 function setSwissWinner(group, roundIndex, matchIndex, winner) {
   const mode = tournamentMode.value
-  const groupRounds = tournamentRounds.value[mode][group].map((round, index) => index !== roundIndex ? round : { ...round, matches: round.matches.map((match, matchAt) => matchAt === matchIndex ? { ...match, winner } : match) })
-  tournamentRounds.value = { ...tournamentRounds.value, [mode]: { ...tournamentRounds.value[mode], [group]: groupRounds } }; saveTournament()
+  const groupRounds = tournamentRounds.value[mode][group].slice(0, roundIndex + 1).map((round, index) => index !== roundIndex ? round : { ...round, matches: round.matches.map((match, matchAt) => matchAt === matchIndex ? { ...match, winner } : match) })
+  tournamentRounds.value = { ...tournamentRounds.value, [mode]: { ...tournamentRounds.value[mode], [group]: groupRounds } }
+  clearTournamentPostseason(mode)
+  saveTournament()
 }
 function autoSwissRound(board) {
   let rounds = tournamentRounds.value[tournamentMode.value][board.label]
@@ -200,7 +212,120 @@ function autoSwissRound(board) {
   rounds = tournamentRounds.value[tournamentMode.value][board.label]
   if (!rounds.length || rounds.at(-1).matches.every(match => match.winner)) return
   const index = rounds.length - 1
-  rounds[index].matches.forEach((match, matchIndex) => setSwissWinner(board.label, index, matchIndex, match.firstPct >= match.secondPct ? match.first : match.second))
+  rounds[index].matches.forEach((match, matchIndex) => setSwissWinner(board.label, index, matchIndex, predictedWinner(match, tournamentPredictionMode.value)))
+}
+function playoffMembers(stage) { return stage.entrants.map(name => tournamentTeamMap.value.get(name)).filter(Boolean) }
+function playoffStandings(stage) { return doubleEliminationStandings(playoffMembers(stage), stage.rounds, stage.target) }
+function playoffFinished(stage) { const standings = playoffStandings(stage); return standings.length > 0 && standings.filter(record => record.status === '晋级').length === stage.target }
+function initializePlayoffStage() {
+  const mode = tournamentMode.value, stages = tournamentPlayoffs.value[mode]
+  if (!tournamentSwissFinished.value || stages.length >= (mode === 'finals' ? 2 : 1)) return
+  const entrants = stages.length ? playoffStandings(stages.at(-1)).filter(record => record.status === '晋级').map(record => record.team) : tournamentBoards.value.flatMap(board => board.standings.filter(record => record.status !== '淘汰').map(record => record.team))
+  if (stages.length && !playoffFinished(stages.at(-1))) return
+  const definition = mode === 'repechage'
+    ? { id: 'qualification', title: '全国赛晋级名额争夺战', target: 4 }
+    : stages.length === 0 ? { id: 'top16', title: '16 进 8 双败淘汰赛', target: 8 } : { id: 'top8', title: '8 进 4 双败淘汰赛', target: 4 }
+  tournamentPlayoffs.value = { ...tournamentPlayoffs.value, [mode]: [...stages, { ...definition, entrants, rounds: [] }] }; saveTournament()
+}
+function startPlayoffRound(stageIndex) {
+  const mode = tournamentMode.value, stages = [...tournamentPlayoffs.value[mode]], stage = stages[stageIndex]
+  const matches = doubleEliminationNextPairings(playoffMembers(stage), stage.rounds, stage.target)
+  if (!matches.length) return
+  stages[stageIndex] = { ...stage, rounds: [...stage.rounds, { round: stage.rounds.length + 1, matches }] }
+  tournamentPlayoffs.value = { ...tournamentPlayoffs.value, [mode]: stages }; saveTournament()
+}
+function setPlayoffWinner(stageIndex, roundIndex, matchIndex, winner) {
+  const mode = tournamentMode.value, stages = tournamentPlayoffs.value[mode].slice(0, stageIndex + 1), stage = stages[stageIndex]
+  const rounds = stage.rounds.slice(0, roundIndex + 1).map((round, index) => index !== roundIndex ? round : { ...round, matches: round.matches.map((match, matchAt) => matchAt === matchIndex ? { ...match, winner } : match) })
+  stages[stageIndex] = { ...stage, rounds }
+  tournamentPlayoffs.value = { ...tournamentPlayoffs.value, [mode]: stages }
+  if (mode === 'finals') tournamentMedals.value = { semifinals: [], final: null, bronze: null }
+  tournamentOdds.value = { ...tournamentOdds.value, [mode]: [] }; saveTournament()
+}
+function autoPlayoffRound(stageIndex) {
+  let stage = tournamentPlayoffs.value[tournamentMode.value][stageIndex]
+  if (!stage.rounds.length || stage.rounds.at(-1).matches.every(match => match.winner)) startPlayoffRound(stageIndex)
+  stage = tournamentPlayoffs.value[tournamentMode.value][stageIndex]
+  if (!stage?.rounds.length || stage.rounds.at(-1).matches.every(match => match.winner)) return
+  const roundIndex = stage.rounds.length - 1
+  stage.rounds[roundIndex].matches.forEach((match, matchIndex) => setPlayoffWinner(stageIndex, roundIndex, matchIndex, predictedWinner(match, tournamentPredictionMode.value)))
+}
+function tournamentMatch(first, second, bestOf = 3) {
+  const estimate = matchupEstimate(tournamentTeamMap.value.get(first), tournamentTeamMap.value.get(second))
+  const firstPct = seriesWinProbability(estimate.primaryPct, bestOf)
+  return { first, second, firstPct, secondPct: Math.round((100 - firstPct) * 10) / 10, bestOf, winner: null }
+}
+function initializeMedals() {
+  const last = tournamentPlayoffs.value.finals.at(-1)
+  if (!last || !playoffFinished(last) || tournamentMedals.value.semifinals.length) return
+  const seeds = playoffStandings(last).filter(record => record.status === '晋级').map(record => record.team)
+  tournamentMedals.value = { semifinals: [tournamentMatch(seeds[0], seeds[3]), tournamentMatch(seeds[1], seeds[2])], final: null, bronze: null }; saveTournament()
+}
+function setMedalWinner(kind, matchIndex, winner) {
+  if (kind === 'semifinals') {
+    const semifinals = tournamentMedals.value.semifinals.map((match, index) => index === matchIndex ? { ...match, winner } : match)
+    let final = null, bronze = null
+    if (semifinals.every(match => match.winner)) {
+      const finalists = semifinals.map(match => match.winner)
+      const losers = semifinals.map(match => match.winner === match.first ? match.second : match.first)
+      final = tournamentMatch(finalists[0], finalists[1], 5); bronze = tournamentMatch(losers[0], losers[1], 5)
+    }
+    tournamentMedals.value = { semifinals, final, bronze }
+  } else tournamentMedals.value = { ...tournamentMedals.value, [kind]: { ...tournamentMedals.value[kind], winner } }
+  saveTournament()
+}
+function autoMedals() {
+  if (!tournamentMedals.value.semifinals.length) initializeMedals()
+  tournamentMedals.value.semifinals.forEach((match, index) => { if (!match.winner) setMedalWinner('semifinals', index, predictedWinner(match, tournamentPredictionMode.value)) })
+  for (const kind of ['bronze', 'final']) { const match = tournamentMedals.value[kind]; if (match && !match.winner) setMedalWinner(kind, 0, predictedWinner(match, tournamentPredictionMode.value)) }
+}
+async function calculateTournamentOdds() {
+  tournamentOddsBusy.value = true
+  await new Promise(resolve => setTimeout(resolve, 0))
+  const groups = tournamentBoards.value.map(board => board.members)
+  tournamentOdds.value = { ...tournamentOdds.value, [tournamentMode.value]: monteCarloTournament(groups, activeTournament.value, tournamentMode.value, 2000, Date.now()) }
+  tournamentOddsBusy.value = false
+}
+function simulateCompleteTournament() {
+  const mode = tournamentMode.value, config = activeTournament.value, nextRounds = { A: [], B: [] }
+  const qualifiers = []
+  for (const board of tournamentBoards.value) {
+    const rounds = []
+    for (let round = 1; round <= config.swiss_rounds; round += 1) {
+      const matches = swissNextPairings(board.members, rounds, config.win_target, config.loss_target, config.swiss_rounds)
+      for (const match of matches) match.winner = predictedWinner(match, tournamentPredictionMode.value)
+      rounds.push({ round, matches })
+    }
+    nextRounds[board.label] = rounds
+    qualifiers.push(...swissStandings(board.members, rounds, config.win_target, config.loss_target, config.swiss_rounds).filter(record => record.status !== '淘汰').map(record => record.team))
+  }
+  tournamentRounds.value = { ...tournamentRounds.value, [mode]: nextRounds }
+  const buildStage = (definition, entrants) => {
+    const members = entrants.map(name => tournamentTeamMap.value.get(name)).filter(Boolean), rounds = []
+    for (let round = 1; round <= 12; round += 1) {
+      const matches = doubleEliminationNextPairings(members, rounds, definition.target)
+      if (!matches.length) break
+      for (const match of matches) match.winner = predictedWinner(match, tournamentPredictionMode.value)
+      rounds.push({ round, matches })
+    }
+    const qualified = doubleEliminationStandings(members, rounds, definition.target).filter(record => record.status === '晋级').map(record => record.team)
+    return [{ ...definition, entrants, rounds }, qualified]
+  }
+  if (mode === 'repechage') {
+    const [stage] = buildStage({ id: 'qualification', title: '全国赛晋级名额争夺战', target: 4 }, qualifiers)
+    tournamentPlayoffs.value = { ...tournamentPlayoffs.value, repechage: [stage] }
+  } else {
+    const [top16, top8Names] = buildStage({ id: 'top16', title: '16 进 8 双败淘汰赛', target: 8 }, qualifiers)
+    const [top8, top4Names] = buildStage({ id: 'top8', title: '8 进 4 双败淘汰赛', target: 4 }, top8Names)
+    tournamentPlayoffs.value = { ...tournamentPlayoffs.value, finals: [top16, top8] }
+    const semifinals = [tournamentMatch(top4Names[0], top4Names[3]), tournamentMatch(top4Names[1], top4Names[2])]
+    for (const match of semifinals) match.winner = predictedWinner(match, tournamentPredictionMode.value)
+    const finalists = semifinals.map(match => match.winner), losers = semifinals.map(match => match.winner === match.first ? match.second : match.first)
+    const final = tournamentMatch(finalists[0], finalists[1], 5), bronze = tournamentMatch(losers[0], losers[1], 5)
+    final.winner = predictedWinner(final, tournamentPredictionMode.value); bronze.winner = predictedWinner(bronze, tournamentPredictionMode.value)
+    tournamentMedals.value = { semifinals, final, bronze }
+  }
+  saveTournament()
 }
 function tournamentDisplay(name) {
   const team = tournamentTeamMap.value.get(name)
@@ -219,7 +344,7 @@ function refreshFinalsPlaceholders() {
 function setFinalsQualifier(indexAt, value) {
   finalsQualifiers.value = finalsQualifiers.value.map((name, index) => index === indexAt ? (value || null) : name === value ? null : name)
   refreshFinalsPlaceholders()
-  tournamentRounds.value = { ...tournamentRounds.value, finals: { A: [], B: [] } }; saveTournament()
+  tournamentRounds.value = { ...tournamentRounds.value, finals: { A: [], B: [] } }; clearTournamentPostseason('finals'); saveTournament()
 }
 async function loadTournament() {
   if (tournamentConfig.value || tournamentBusy.value) return
@@ -239,9 +364,9 @@ async function loadTournament() {
     }
     tournamentTeams.value = loaded
     let restored = null
-    try { restored = JSON.parse(localStorage.getItem('rmuc-tournament-pickem-2') || 'null') } catch { restored = null }
+    try { restored = JSON.parse(localStorage.getItem('rmuc-tournament-pickem-3') || 'null') } catch { restored = null }
     if (restored?.groups?.repechage?.flat().length === 16 && restored?.groups?.finals?.flat().length === 32) {
-      tournamentGroups.value = restored.groups; tournamentRounds.value = restored.rounds || tournamentRounds.value; finalsQualifiers.value = restored.finalsQualifiers || finalsQualifiers.value
+      tournamentGroups.value = restored.groups; tournamentRounds.value = restored.rounds || tournamentRounds.value; finalsQualifiers.value = restored.finalsQualifiers || finalsQualifiers.value; tournamentPlayoffs.value = restored.playoffs || tournamentPlayoffs.value; tournamentMedals.value = restored.medals || tournamentMedals.value; tournamentPredictionMode.value = restored.predictionMode || 'random'
       refreshFinalsPlaceholders()
     } else { tournamentMode.value = 'repechage'; randomizeTournament(); tournamentMode.value = 'finals'; randomizeTournament(); tournamentMode.value = 'repechage' }
   } finally { tournamentBusy.value = false }
@@ -300,8 +425,9 @@ onBeforeUnmount(() => clearInterval(timer))
     <template v-else-if="activeTournament">
       <div class="tournament-switch"><button :class="{active:tournamentMode==='repechage'}" @click="switchTournament('repechage')">复活赛</button><button :class="{active:tournamentMode==='finals'}" @click="switchTournament('finals')">全国赛</button></div>
       <div class="notice">{{activeTournament.draw_note}}</div>
-      <header><div><p>{{activeTournament.dates}} · {{activeTournament.format}}</p><h1>{{activeTournament.title}} Major Pick'Em</h1></div><div class="tournament-actions"><button class="random-button" @click="randomizeTournament">重新模拟抽签</button><button class="random-button secondary" @click="resetTournamentResults">重置赛果</button></div></header>
+      <header><div><p>{{activeTournament.dates}} · {{activeTournament.format}}</p><h1>{{activeTournament.title}} Major Pick'Em</h1></div><div class="tournament-actions"><select v-model="tournamentPredictionMode" @change="saveTournament"><option value="random">按胜率概率模拟（可爆冷）</option><option value="favorite">最高概率路径（无爆冷）</option></select><button class="random-button primary" @click="simulateCompleteTournament">一键推演完整赛事</button><button class="random-button" :disabled="tournamentOddsBusy" @click="calculateTournamentOdds">{{tournamentOddsBusy?'正在模拟…':'运行 2,000 次概率模拟'}}</button><button class="random-button" @click="randomizeTournament">重新模拟抽签</button><button class="random-button secondary" @click="resetTournamentResults">重置赛果</button></div></header>
       <section v-if="tournamentMode==='finals'" class="panel qualifier-panel"><div class="section-head"><h2>填入 4 支复活赛晋级队</h2><span>未确定时可保留占位队</span></div><div class="qualifier-selects"><label v-for="(_,indexAt) in finalsQualifiers" :key="indexAt">晋级队 {{indexAt+1}}<select :value="finalsQualifiers[indexAt]||''" @change="setFinalsQualifier(indexAt,$event.target.value)"><option value="">待定</option><option v-for="team in tournamentTeams.repechage" :key="team.team" :value="team.team">{{team.team}} · {{team.battle_name}}</option></select></label></div></section>
+      <section v-if="activeTournamentOdds.length" class="panel odds-panel"><div class="section-head"><h2>全赛事蒙特卡洛概率</h2><span>2,000 次 · 每场按显示胜率随机抽样</span></div><div class="odds-table"><div class="odds-row odds-head"><b>队伍</b><span>瑞士轮出线</span><span>{{tournamentMode==='repechage'?'全国赛资格':'八强'}}</span><span v-if="tournamentMode==='finals'">四强</span><span v-if="tournamentMode==='finals'">冠军</span></div><div v-for="row in activeTournamentOdds" :key="row.team" class="odds-row"><b>{{tournamentDisplay(row.team)}}</b><span>{{row.swissPct}}%</span><span>{{tournamentMode==='repechage'?row.qualifyPct:row.top8Pct}}%</span><span v-if="tournamentMode==='finals'">{{row.top4Pct}}%</span><strong v-if="tournamentMode==='finals'">{{row.championPct}}%</strong></div></div></section>
       <section class="pickem-grid">
         <article v-for="(board,groupIndex) in tournamentBoards" :key="board.label" class="panel pick-group swiss-board">
           <div class="section-head"><h2>{{board.label}} 组</h2><span>{{board.members.length}} 队 · {{activeTournament.swiss_rounds}} 轮</span></div>
@@ -311,14 +437,19 @@ onBeforeUnmount(() => clearInterval(timer))
               <select :value="groupIndex" :aria-label="`${tournamentDisplay(team.team)}分组`" @change="moveTournamentTeam(team.team,$event.target.value)"><option v-for="(_,target) in tournamentLabels" :key="target" :value="target">{{tournamentLabels[target]}}组</option></select>
             </div>
           </div>
-          <div class="round-actions"><button v-if="!board.rounds.length" @click="startSwissRound(board)">生成第 1 轮对阵</button><button v-else-if="board.rounds.length<activeTournament.swiss_rounds && board.rounds.at(-1).matches.every(match=>match.winner)" @click="startSwissRound(board)">生成第 {{board.rounds.length+1}} 轮对阵</button><button v-if="board.rounds.length<activeTournament.swiss_rounds || board.rounds.some(round=>round.matches.some(match=>!match.winner))" @click="autoSwissRound(board)">模型自动推演本轮</button></div>
+          <div class="round-actions"><button v-if="!board.rounds.length" @click="startSwissRound(board)">生成第 1 轮对阵</button><button v-else-if="board.rounds.length<activeTournament.swiss_rounds && board.rounds.at(-1).matches.every(match=>match.winner)" @click="startSwissRound(board)">生成第 {{board.rounds.length+1}} 轮对阵</button><button v-if="board.rounds.length<activeTournament.swiss_rounds || board.rounds.some(round=>round.matches.some(match=>!match.winner))" @click="autoSwissRound(board)">{{tournamentPredictionMode==='random'?'概率模拟本轮':'预测本轮热门胜出'}}</button></div>
           <div class="swiss-rounds">
             <section v-for="(round,roundIndex) in board.rounds" :key="round.round" class="swiss-round"><h3>第 {{round.round}} 轮</h3><div v-for="(match,matchIndex) in round.matches" :key="`${match.first}-${match.second}`" class="swiss-match"><button :class="{winner:match.winner===match.first}" @click="setSwissWinner(board.label,roundIndex,matchIndex,match.first)"><span>{{tournamentDisplay(match.first)}}</span><strong>{{match.firstPct}}%</strong></button><em>BO3</em><button :class="{winner:match.winner===match.second}" @click="setSwissWinner(board.label,roundIndex,matchIndex,match.second)"><strong>{{match.secondPct}}%</strong><span>{{tournamentDisplay(match.second)}}</span></button></div></section>
           </div>
           <details class="standings" open><summary>实时积分榜</summary><div v-for="(record,rankAt) in board.standings" :key="record.team" :class="['standing-row',record.status]"><b>#{{rankAt+1}} {{tournamentDisplay(record.team)}}</b><span>{{record.wins}}胜 {{record.losses}}负 · 对手分 {{record.opponentScore>0?'+':''}}{{record.opponentScore}}</span><em>{{record.status}}</em></div></details>
         </article>
       </section>
-      <p class="method">赛制门槛来自全国总决赛参赛手册 V2.1.0：复活赛 A/B 各 8 队进行 3 轮瑞士轮，累计 2 负淘汰，其余队进入 4 个全国赛名额的后续争夺；全国赛 A/B 各 16 队进行 5 轮瑞士轮，3 胜晋级、3 负淘汰。模拟首轮按抽签序号高低位配对，后续按胜负、手册定义的对手分排序，优先相邻战绩且避免重复交手；尚无官方基地净血量与全队伤害同分数据时，以模型强度处理排序冲突。页面胜率与自动赛果是战术数据库模型估计，不是官方赛果。</p>
+      <section class="postseason">
+        <div class="stage-transition"><button v-if="tournamentSwissFinished && !activePlayoffStages.length" class="random-button" @click="initializePlayoffStage">生成{{tournamentMode==='repechage'?'全国赛名额争夺战':'16 进 8 双败赛'}}</button><button v-else-if="tournamentMode==='finals' && activePlayoffStages.length===1 && playoffFinished(activePlayoffStages[0])" class="random-button" @click="initializePlayoffStage">生成 8 进 4 双败赛</button><button v-else-if="tournamentMode==='finals' && activePlayoffStages.length===2 && playoffFinished(activePlayoffStages[1]) && !tournamentMedals.semifinals.length" class="random-button" @click="initializeMedals">生成半决赛</button></div>
+        <article v-for="(stage,stageIndex) in activePlayoffStages" :key="stage.id" class="panel playoff-stage"><div class="section-head"><h2>{{stage.title}}</h2><span>BO3 · 两败淘汰 · {{stage.target}} 队晋级</span></div><div class="round-actions"><button v-if="!playoffFinished(stage) && (!stage.rounds.length || stage.rounds.at(-1).matches.every(match=>match.winner))" @click="startPlayoffRound(stageIndex)">生成第 {{stage.rounds.length+1}} 轮</button><button v-if="!playoffFinished(stage)" @click="autoPlayoffRound(stageIndex)">{{tournamentPredictionMode==='random'?'概率模拟本轮':'预测本轮热门胜出'}}</button></div><div class="playoff-round-grid"><section v-for="(round,roundIndex) in stage.rounds" :key="round.round" class="swiss-round"><h3>双败第 {{round.round}} 轮</h3><div v-for="(match,matchIndex) in round.matches" :key="`${match.first}-${match.second}`" class="swiss-match"><button :class="{winner:match.winner===match.first}" @click="setPlayoffWinner(stageIndex,roundIndex,matchIndex,match.first)"><span>{{tournamentDisplay(match.first)}}</span><strong>{{match.firstPct}}%</strong></button><em>BO3</em><button :class="{winner:match.winner===match.second}" @click="setPlayoffWinner(stageIndex,roundIndex,matchIndex,match.second)"><strong>{{match.secondPct}}%</strong><span>{{tournamentDisplay(match.second)}}</span></button></div></section></div><details class="standings" open><summary>双败实时状态</summary><div v-for="record in playoffStandings(stage)" :key="record.team" :class="['standing-row',record.status]"><b>{{tournamentDisplay(record.team)}}</b><span>{{record.wins}}胜 · {{record.losses}}负</span><em>{{record.status}}</em></div></details></article>
+        <article v-if="tournamentMode==='finals' && tournamentMedals.semifinals.length" class="panel medal-stage"><div class="section-head"><h2>四强决赛阶段</h2><span>半决赛 BO3 · 季军赛/决赛 BO5</span></div><div class="round-actions"><button @click="autoMedals">{{tournamentPredictionMode==='random'?'概率模拟剩余奖牌赛':'预测热门赢得奖牌赛'}}</button></div><div class="medal-grid"><section><h3>半决赛</h3><div v-for="(match,indexAt) in tournamentMedals.semifinals" :key="indexAt" class="swiss-match"><button :class="{winner:match.winner===match.first}" @click="setMedalWinner('semifinals',indexAt,match.first)"><span>{{tournamentDisplay(match.first)}}</span><strong>{{match.firstPct}}%</strong></button><em>BO3</em><button :class="{winner:match.winner===match.second}" @click="setMedalWinner('semifinals',indexAt,match.second)"><strong>{{match.secondPct}}%</strong><span>{{tournamentDisplay(match.second)}}</span></button></div></section><section v-if="tournamentMedals.bronze"><h3>季军争夺战</h3><div class="swiss-match"><button :class="{winner:tournamentMedals.bronze.winner===tournamentMedals.bronze.first}" @click="setMedalWinner('bronze',0,tournamentMedals.bronze.first)"><span>{{tournamentDisplay(tournamentMedals.bronze.first)}}</span><strong>{{tournamentMedals.bronze.firstPct}}%</strong></button><em>BO5</em><button :class="{winner:tournamentMedals.bronze.winner===tournamentMedals.bronze.second}" @click="setMedalWinner('bronze',0,tournamentMedals.bronze.second)"><strong>{{tournamentMedals.bronze.secondPct}}%</strong><span>{{tournamentDisplay(tournamentMedals.bronze.second)}}</span></button></div></section><section v-if="tournamentMedals.final"><h3>冠军争夺战</h3><div class="swiss-match championship"><button :class="{winner:tournamentMedals.final.winner===tournamentMedals.final.first}" @click="setMedalWinner('final',0,tournamentMedals.final.first)"><span>{{tournamentDisplay(tournamentMedals.final.first)}}</span><strong>{{tournamentMedals.final.firstPct}}%</strong></button><em>BO5</em><button :class="{winner:tournamentMedals.final.winner===tournamentMedals.final.second}" @click="setMedalWinner('final',0,tournamentMedals.final.second)"><strong>{{tournamentMedals.final.secondPct}}%</strong><span>{{tournamentDisplay(tournamentMedals.final.second)}}</span></button></div><p v-if="tournamentMedals.final.winner" class="champion-result">🏆 模拟冠军：{{tournamentDisplay(tournamentMedals.final.winner)}}</p></section></div></article>
+      </section>
+      <p class="method">赛制门槛来自全国总决赛参赛手册 V2.1.0。概率模拟会把 65% 胜率解释为约 65% 的获胜机会，因此允许爆冷；“最高概率路径”才会固定选择胜率较高的一方。手册只公开双败筛选人数，未在 PDF 内嵌具体对阵树，因此双败阶段采用按当前负场与模型种子交叉配对、两败淘汰的透明模拟规则。瑞士轮尚无官方基地净血量与全队伤害同分数据时，以模型强度处理末级排序冲突。所有结果均为竞猜模型，不是官方赛果。</p>
     </template>
   </main>
   <main v-else-if="viewMode==='role' && roleTeam && roleIndex" class="role-main">

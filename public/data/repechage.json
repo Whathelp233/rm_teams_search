@@ -1,5 +1,11 @@
 {
-  "schema_version": "tournament-pickem-2.0.0",
+  "schema_version": "tournament-pickem-3.0.0",
+  "simulation": {
+    "winner_modes": ["probability_random", "favorite_path", "manual"],
+    "monte_carlo_iterations": 2000,
+    "series_probability": "先将战术模型单局胜率按二项分布换算为对应BO3或BO5系列赛胜率，再用于赛果抽样。",
+    "double_elimination_rule": "按当前负场和模型种子交叉配对，累计两败淘汰；PDF未内嵌官方对阵树，因此页面明确标注为模拟对阵。"
+  },
   "rule_source": "RoboMaster 2026 机甲大师超级对抗赛·全国总决赛参赛手册 V2.1.0（2026-07-16）",
   "repechage": {
     "title": "复活赛",
@@ -11,6 +17,7 @@
     "win_target": null,
     "loss_target": 2,
     "stage_result": "未累计2败的8支队伍进入全国赛晋级名额争夺战，双败制决出4个全国赛名额。",
+    "postseason": ["全国赛晋级名额争夺战（BO3双败，8进4）"],
     "draw_note": "按手册分两档抽签，A/B组各从每档抽取4队。当前分组为用户抽签模拟，不代表官方抽签结果。",
     "teams": [
       {"team":"广东工业大学","battle_name":"DynamicX","tier":1},{"team":"南方科技大学","battle_name":"ARTINX","tier":1},{"team":"南华大学","battle_name":"MA","tier":1},{"team":"南京航空航天大学金城学院","battle_name":"Born of Fire","tier":1},{"team":"山东理工大学","battle_name":"齐奇","tier":1},{"team":"西安电子科技大学","battle_name":"IRobot","tier":1},{"team":"中国科学技术大学","battle_name":"RoboWalker","tier":1},{"team":"中国矿业大学","battle_name":"CUBOT","tier":1},
@@ -27,6 +34,7 @@
     "win_target": 3,
     "loss_target": 3,
     "stage_result": "累计3胜晋级16进8双败淘汰赛，累计3败淘汰；之后依次进行16进8、8进4双败赛及四强单败赛。",
+    "postseason": ["16进8淘汰赛（BO3双败）", "8进4淘汰赛（BO3双败）", "半决赛（BO3单败）", "季军争夺战（BO5）", "冠军争夺战（BO5）"],
     "draw_note": "按手册六个抽签盒及A1—A16/B1—B16席位抽签。当前分组为用户抽签模拟，不代表官方抽签结果。",
     "teams": [
       {"team":"东北大学","battle_name":"TDT","tier":1},{"team":"华南农业大学","battle_name":"Taurus","tier":1},{"team":"中国石油大学（华东）","battle_name":"RPS","tier":1},
