@@ -198,9 +198,9 @@ export function rankTeamsByStrength(teams) {
 export function matchupEstimate(primary, opponent, headToHead = []) {
   const primaryStrength = teamStrength(primary)
   const opponentStrength = teamStrength(opponent)
-  // A broad logistic scale deliberately avoids extreme claims from a small,
-  // schedule-dependent regional sample.
-  let probability = 1 / (1 + Math.exp(-(primaryStrength - opponentStrength) / 20))
+  // Scale 10 is the conservative end of the empirical 7.5–10 calibration
+  // range on 613 regional matches; intervals below still expose uncertainty.
+  let probability = 1 / (1 + Math.exp(-(primaryStrength - opponentStrength) / 10))
   const h2hGames = headToHead.length
   const h2hWins = headToHead.filter(match => Boolean(match.won)).length
   if (h2hGames) {

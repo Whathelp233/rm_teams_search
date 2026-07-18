@@ -30,10 +30,10 @@ DIMENSION_WEIGHTS = {
 COMPONENT_WEIGHTS = {
     "firepower": {"clean_output": 0.30, "accuracy": 0.25, "kill_conversion": 0.25, "pressure_uptime": 0.20},
     "objective": {"outpost_pressure": 0.15, "outpost_conversion": 0.25, "base_pressure": 0.15, "base_conversion": 0.25, "strategic_tools": 0.20},
-    "spatial": {"relative_territory": 0.30, "forward_presence": 0.25, "neutral_control": 0.20, "field_coverage": 0.15, "mobility": 0.10},
+    "spatial": {"relative_territory": 0.30, "forward_presence": 0.25, "neutral_control": 0.20, "field_coverage": 0.25},
     "defense": {"trade_resilience": 0.25, "mobile_resilience": 0.20, "outpost_denial": 0.20, "base_denial": 0.25, "collapse_resistance": 0.10},
     "resource": {"acquisition": 0.25, "utilization": 0.20, "combat_conversion": 0.20, "objective_conversion": 0.15, "thermal_efficiency": 0.20},
-    "adaptability": {"side_transfer": 0.25, "opponent_robustness": 0.20, "strong_opponent_residual": 0.25, "setback_adjustment": 0.20, "viable_variants": 0.10},
+    "adaptability": {"side_transfer": 0.25, "opponent_robustness": 0.20, "strong_opponent_residual": 0.25, "setback_adjustment": 0.20, "strategy_switch_effect": 0.10},
 }
 
 
@@ -330,7 +330,9 @@ def main():
             shots = float(match.get("shots_17") or 0) + float(match.get("shots_42") or 0)
             fire["accuracy"].append(robot_hits[(game_id, team)] / max(1.0, shots))
             opponent_match = matches.get((game_id, opponent), {})
-            fire["kill_conversion"].append(float(opponent_match.get("deaths") or 0) * 420.0 / duration)
+            # Finishing efficiency is deaths converted per unit of robot damage,
+            # not another copy of damage volume.
+            fire["kill_conversion"].append(float(opponent_match.get("deaths") or 0) / max(1.0, robot_dealt / 1000.0))
             fire["pressure_uptime"].append(len(attack_seconds[(game_id, team)]) / duration)
 
             first_outpost = first_attack.get((game_id, team, "outpost"))
@@ -340,7 +342,9 @@ def main():
             killed = zero is not None and first_outpost is not None and float(zero) >= first_outpost
             objective["outpost_conversion"].append(0.0 if not killed else 0.5 + 0.5 * max(0.0, 1.0 - (float(zero) - first_outpost) / duration))
             objective["base_pressure"].append(0.0 if first_base is None else 0.5 + 0.5 * max(0.0, 1.0 - first_base / duration))
-            objective["base_conversion"].append(min(1.0, opp_in["base"] / 5000.0))
+            objective["base_conversion"].append(
+                0.0 if first_base is None else opp_in["base"] / max(30.0, duration - first_base)
+            )
             tools = float(match.get("dart_hits") or 0) + 0.5 * float(match.get("rune_events") or 0) + 0.25 * float(match.get("radar_counter_events") or 0)
             objective["strategic_tools"].append(tools * 420.0 / duration)
 
@@ -352,7 +356,6 @@ def main():
             spatial["neutral_control"].append(None if own_neutral is None or opp_neutral is None else own_neutral / max(1e-6, own_neutral + opp_neutral))
             active_minutes = max(1.0 / 60.0, duration / 60.0)
             spatial["field_coverage"].append(float(own_space.get("cells") or 0) / active_minutes)
-            spatial["mobility"].append(float(match.get("distance_m") or 0) * 420.0 / duration)
 
             expected_attack = 0.5 * global_output + 0.5 * clean_output_baseline.get(opponent, global_output)
             normalized_dealt = (robot_dealt * 420.0 / duration) / max(1.0, opponent_allowance)
@@ -371,8 +374,15 @@ def main():
             base_delay = 1.0 if base_first is None else min(1.0, base_first / duration)
             base_hp = own_space.get("base_hp")
             base_denial = None if base_hp is None else 0.45 * base_hp + 0.25 * base_delay + 0.30 * (1.0 - min(1.0, own_in["base"] / 5000.0))
-            available_layers = [value for value in (mobile_resilience, outpost_denial, base_denial) if value is not None]
-            collapse_resistance = min(available_layers) if available_layers else None
+            collapse_layers = [
+                (trade_resilience, 0.25), (mobile_resilience, 0.20),
+                (outpost_denial, 0.25), (base_denial, 0.30),
+            ]
+            collapse_available = [(value, weight) for value, weight in collapse_layers if value is not None]
+            collapse_resistance = (
+                sum(value * weight for value, weight in collapse_available) / sum(weight for _, weight in collapse_available)
+                if collapse_available else None
+            )
             defense["trade_resilience"].append(trade_resilience)
             defense["mobile_resilience"].append(mobile_resilience)
             defense["outpost_denial"].append(outpost_denial)
@@ -400,7 +410,10 @@ def main():
         fire_raw[team] = {key: mean(fire[key]) for key in COMPONENT_WEIGHTS["firepower"]}
         objective_raw[team] = {key: mean(objective[key]) for key in COMPONENT_WEIGHTS["objective"]}
         spatial_raw[team] = {key: mean(spatial[key], None) for key in COMPONENT_WEIGHTS["spatial"]}
-        defense_raw[team] = {key: typical_with_floor(defense[key], None) for key in COMPONENT_WEIGHTS["defense"]}
+        defense_raw[team] = {
+            key: (quantile(defense[key], 0.25, None) if key == "collapse_resistance" else typical_with_floor(defense[key], None))
+            for key in COMPONENT_WEIGHTS["defense"]
+        }
         resource_raw[team] = {key: mean(resource[key]) for key in COMPONENT_WEIGHTS["resource"]}
         excluded[team] = {"penalty_damage": rounded(penalty, 0), "collision_damage": rounded(collision, 0)}
 
@@ -425,10 +438,8 @@ def main():
     adaptation_raw, adaptation_samples = {}, {}
     for team, (_, payload) in payloads.items():
         by_side, by_opponent, strong_residual, setback = defaultdict(list), defaultdict(list), [], []
-        team_values = []
         for match in payload["matches"]:
             key = (match["game_id"], team); value = conditional_perf[key]
-            team_values.append(value)
             by_side[match["side"]].append(value); by_opponent[match["opponent"]].append(value)
             if win_rates.get(match["opponent"], 50.0) >= opponent_median:
                 strong_residual.append(value)
@@ -446,26 +457,25 @@ def main():
         side_transfer = None if side_n == 0 else -abs(red_mean - blue_mean)
         opponent_means = [mean(values) for values in by_opponent.values()]
         opponent_robustness = None if opponent_n < 3 else quantile(opponent_means, 0.25) - statistics.median(opponent_means)
-        team_mean = mean(team_values)
-        viable = eligible = evidence_pairs = 0
+        variant_effects = []
+        evidence_pairs = 0
         for mode in ("early_outpost", "base_42", "dart", "rune", "radar"):
             active = [conditional_perf[(match["game_id"], team)] for match in payload["matches"] if match_modes[(match["game_id"], team)].get(mode)]
             inactive = [conditional_perf[(match["game_id"], team)] for match in payload["matches"] if not match_modes[(match["game_id"], team)].get(mode)]
             if len(active) >= 2 and len(inactive) >= 2:
-                eligible += 1
                 evidence_pairs += 2 * min(len(active), len(inactive))
-                viable += int(mean(active) >= team_mean - 10.0)
+                variant_effects.append(max(-30.0, min(30.0, mean(active) - mean(inactive))))
         adaptation_raw[team] = {
             "side_transfer": side_transfer,
             "opponent_robustness": opponent_robustness,
             "strong_opponent_residual": typical_with_floor(strong_residual, None),
             "setback_adjustment": typical_with_floor(setback, None),
-            "viable_variants": None if eligible == 0 else viable / eligible,
+            "strategy_switch_effect": mean(variant_effects, None),
         }
         adaptation_samples[team] = {
             "side_transfer": side_n * 2, "opponent_robustness": opponent_n,
             "strong_opponent_residual": len(strong_residual), "setback_adjustment": len(setback),
-            "viable_variants": min(games_by_team[team], evidence_pairs),
+            "strategy_switch_effect": min(games_by_team[team], evidence_pairs),
         }
 
     raw_dimensions = {"firepower": fire_raw, "objective": objective_raw, "spatial": spatial_raw, "defense": defense_raw, "resource": resource_raw}
@@ -509,7 +519,7 @@ def main():
     overall_ranks = {team: 1 + sum(strength_scores[other] > strength_scores[team] for other in teams) for team in teams}
 
     index["schema_version"] = "3.1.0"
-    index["data_version"] = "score-3.1.0"
+    index["data_version"] = "score-3.1.1"
     index["placement_method"] = {
         "format": "参赛手册规定的16进8、8进4、半决赛、季军争夺战和冠军争夺战，结合数据库实际胜负推导",
         "sources": [
@@ -526,7 +536,7 @@ def main():
         invalid_points = sum(float(match.get("invalid_position_points") or 0) for match in payload["matches"])
         position_coverage = position_points / max(1.0, position_points + invalid_points)
         confidence = 100.0 * games_by_team[team] / (games_by_team[team] + 8.0) * math.sqrt(position_coverage)
-        payload["schema_version"] = "3.1.0"; payload["data_version"] = "score-3.1.0"
+        payload["schema_version"] = "3.1.0"; payload["data_version"] = "score-3.1.1"
         payload.pop("consistency_analysis", None)
         payload["scores"] = scores
         payload["dimension_ranks"] = dimension_ranks[team]
