@@ -4,7 +4,7 @@ import { init, use } from 'echarts/core'
 import { BarChart, RadarChart } from 'echarts/charts'
 import { GridComponent, RadarComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { aggregateHeatCells, densityOpacity, officialToMap, reliabilityTone, teamPerspectivePoint } from './domain.js'
+import { aggregateHeatCells, densityOpacity, matchupEstimate, officialToMap, reliabilityScore, reliabilityTone, teamPerspectivePoint } from './domain.js'
 
 use([BarChart, RadarChart, GridComponent, RadarComponent, TooltipComponent, CanvasRenderer])
 const base = import.meta.env.BASE_URL
@@ -20,6 +20,42 @@ const reliability = computed(() => selected.value?.reliability)
 const filteredHeat = computed(() => (heat.value?.cells || []).filter(c => (heatSide.value === '全部' || c[0] === heatSide.value) && (heatRobot.value === '全部' || c[1] === heatRobot.value) && c[2] >= heatFrom.value && c[2] <= heatTo.value))
 const aggregatedHeat = computed(() => aggregateHeatCells(filteredHeat.value, heatXY, heatView.value === 'canonical'))
 const maxHeat = computed(() => Math.max(1, ...aggregatedHeat.value.map(c => c.samples)))
+const headToHead = computed(() => compareTeam.value ? selected.value.matches.filter(match => match.opponent === compareTeam.value.team) : [])
+const matchup = computed(() => compareTeam.value ? matchupEstimate(selected.value, compareTeam.value, headToHead.value) : null)
+const comparisonRows = computed(() => {
+  if (!compareTeam.value || !matchup.value) return []
+  const a = selected.value, b = compareTeam.value
+  const metric = (label, first, second, format = value => Number(value ?? 0).toFixed(1), lower = false, neutral = false) => {
+    const difference = Number(first ?? 0) - Number(second ?? 0)
+    const leader = neutral || Math.abs(difference) < .005 ? (neutral ? '样本' : '持平') : ((lower ? difference < 0 : difference > 0) ? a.team : b.team)
+    return { label, first: format(first), second: format(second), leader }
+  }
+  const pct = value => `${Number(value ?? 0).toFixed(1)}%`
+  const number = value => Number(value ?? 0).toFixed(1)
+  return [
+    metric('样本战绩', a.summary.games, b.summary.games, (_, team = null) => team, false, true),
+    metric('历史胜率', a.summary.win_rate, b.summary.win_rate, pct),
+    metric('模型综合强度', matchup.value.primaryStrength, matchup.value.opponentStrength, number),
+    metric('火力评分', a.scores.firepower, b.scores.firepower, number),
+    metric('战略目标评分', a.scores.objective, b.scores.objective, number),
+    metric('空间评分', a.scores.spatial, b.scores.spatial, number),
+    metric('防守评分', a.scores.defense, b.scores.defense, number),
+    metric('资源评分', a.scores.resource, b.scores.resource, number),
+    metric('适应性评分', a.scores.adaptability, b.scores.adaptability, number),
+    metric('场均输出', a.summary.avg_damage_dealt, b.summary.avg_damage_dealt, value => Number(value ?? 0).toFixed(0)),
+    metric('场均基地伤害', a.summary.avg_base_damage, b.summary.avg_base_damage, value => Number(value ?? 0).toFixed(0)),
+    metric('场均前哨伤害', a.summary.avg_outpost_damage, b.summary.avg_outpost_damage, value => Number(value ?? 0).toFixed(0)),
+    metric('检测命中/发弹', (a.summary.shot_accuracy || 0) * 100, (b.summary.shot_accuracy || 0) * 100, pct),
+    metric('开局完整率', a.reliability?.start_complete_pct, b.reliability?.start_complete_pct, pct),
+    metric('在场时间率', a.reliability?.availability_pct, b.reliability?.availability_pct, pct),
+    metric('高置信掉线局率', a.reliability?.disconnect_game_pct, b.reliability?.disconnect_game_pct, pct, true),
+    metric('可靠性综合', reliabilityScore(a), reliabilityScore(b), (value, team) => `${team?.reliability?.grade || '—'} · ${Number(value).toFixed(1)}`),
+  ].map((row, index) => {
+    if (index === 0) return { ...row, first: `${a.summary.wins}胜/${a.summary.games}局`, second: `${b.summary.wins}胜/${b.summary.games}局` }
+    if (index === 16) return { ...row, first: `${a.reliability?.grade || '—'} · ${reliabilityScore(a).toFixed(1)}`, second: `${b.reliability?.grade || '—'} · ${reliabilityScore(b).toFixed(1)}` }
+    return row
+  })
+})
 const shownEvents = computed(() => (gameData.value?.events || []).filter(e => e.second <= time.value))
 const currentFrame = computed(() => {
   const frames = gameData.value?.frames || []; let found = []
@@ -87,7 +123,7 @@ onBeforeUnmount(() => clearInterval(timer))
     <section v-if="gameData" class="panel timeline"><div class="toolbar"><button class="play" @click="togglePlay">{{playing?'暂停':'播放'}}</button><b>{{fmtSecond(time)}} / {{fmtSecond(gameData.game.duration_sec)}}</b><select v-model.number="speed"><option :value=".5">0.5×</option><option :value="1">1×</option><option :value="2">2×</option><option :value="4">4×</option></select><label>尾迹 <input type="number" v-model.number="tail" min="3" max="120"> 秒</label><select v-model="mapMode"><option value="raster">规则实场图</option><option value="vector">官方坐标简图</option></select><select v-model="routeView"><option value="actual">全局实际阵营</option><option value="own">所选队伍己方视角（整场旋转）</option></select></div><p class="method">全局视图：红方位于地图左侧、蓝方位于右侧；己方视图会将地图和双方机器人整体旋转，不会把两队重叠。</p><input class="scrubber" type="range" min="0" :max="gameData.game.duration_sec" step="1" v-model.number="time"><svg class="field" viewBox="0 0 28 15"><image :href="`${base}maps/${mapFile}`" width="28" height="15" preserveAspectRatio="none" opacity=".72" :transform="routeMapTransform()"/><polyline v-for="trailItem in trails" :key="trailItem.i" :points="trailItem.points.map(p=>frameXY(p).join(',')).join(' ')" fill="none" :stroke="colors[trailItem.i%colors.length]" stroke-width=".09"/><g v-for="row in currentFrame" :key="row[0]" v-show="visibleRobots[row[0]]!==false"><circle :cx="frameXY(row)[0]" :cy="frameXY(row)[1]" r=".19" :fill="colors[row[0]%colors.length]" stroke="white" stroke-width=".04"/><text :x="frameXY(row)[0]+.25" :y="frameXY(row)[1]" font-size=".32" fill="white">{{gameData.robots[row[0]].robot_type}}</text></g></svg><div class="legend"><label v-for="(r,i) in gameData.robots" :key="i"><input type="checkbox" v-model="visibleRobots[i]"><i :style="{background:colors[i%colors.length]}"></i>{{r.side}}{{r.robot_type}} · {{r.team}}</label></div><div class="events"><button v-for="(e,i) in shownEvents.slice(-30)" :key="i" @click="time=e.second"><b>{{fmtSecond(e.second)}} {{e.type}}</b><span>{{e.team||e.detail||''}} · {{e.confidence}}</span></button></div></section>
     <section class="panel"><h2>黄牌 / 红牌推断</h2><p class="method">源数据只有“判罚扣血”，没有牌色字段。以下按同步扣血比例标注高/中置信黄牌、推定红牌或牌色未知，不强行归类。</p><div class="penalty-table"><div v-for="p in selected.penalty_incidents" :key="`${p.game_id}-${p.second}`"><b>局 {{p.game_id}} · {{fmtSecond(p.second)}} · {{p.incident_type}}</b><span>{{p.offender_type||'对象未知'}} · 扣血 {{p.penalty_damage}} · {{p.confidence}}置信<span v-if="p.inferred_red"> · 推定红牌</span></span></div><p v-if="!selected.penalty_incidents.length">该队样本中无可识别判罚事件。</p></div></section>
     <section class="panel"><h2>稳定战术与全队克制方案</h2><div class="patterns"><div v-for="p in selected.patterns" :key="p.pattern_id" :class="['pattern',p.classification]"><b>{{p.label}}</b><span>{{p.classification}} · {{(p.rate*100).toFixed(0)}}%</span><small>{{p.games_observed}} 局 / {{p.opponents}} 个对手</small></div></div><div class="counter" v-for="item in selected.counter_plan" :key="item.signal"><b>{{item.signal}}</b><p>{{item.action}}</p><small>退出：{{item.exit}}</small></div></section>
-    <section class="panel compare"><h2>双队对比</h2><select v-model="compareSlug"><option value="">选择另一支队伍</option><option v-for="t in index.teams.filter(t=>t.team!==selected.team)" :value="t.slug">{{t.team}}</option></select><div v-if="compareTeam" class="compare-grid"><div><b>{{selected.team}}</b><span>火力 {{selected.scores.firepower}}</span><span>可靠性 {{selected.reliability?.grade}}</span></div><div><b>{{compareTeam.team}}</b><span>火力 {{compareTeam.scores.firepower}}</span><span>可靠性 {{compareTeam.reliability?.grade}}</span></div></div></section>
+    <section class="panel compare"><div class="section-head"><h2>双队同口径对比与胜率判定</h2><span>区域赛样本模型，不代表确定赛果</span></div><select v-model="compareSlug"><option value="">选择另一支队伍</option><option v-for="t in index.teams.filter(t=>t.team!==selected.team)" :value="t.slug">{{t.team}}</option></select><template v-if="compareTeam && matchup"><div class="prediction"><div><span>{{selected.team}} 模型胜率</span><strong>{{matchup.primaryPct}}%</strong><small>估计区间 {{matchup.interval[0]}}%–{{matchup.interval[1]}}%</small></div><div class="verdict"><span>对局判定</span><strong>{{matchup.verdict}}</strong><small>置信度：{{matchup.confidence}} · 综合强度 {{matchup.primaryStrength}} : {{matchup.opponentStrength}}</small></div><div><span>{{compareTeam.team}} 模型胜率</span><strong>{{matchup.opponentPct}}%</strong><small v-if="matchup.h2hGames">历史交手 {{matchup.h2hGames}} 局：{{matchup.h2hWins}}胜{{matchup.h2hLosses}}负</small><small v-else>数据库中无直接交手</small></div></div><div class="comparison-table"><div class="comparison-row comparison-head"><b>同口径指标</b><b>{{selected.team}}</b><b>{{compareTeam.team}}</b><b>相对优势</b></div><div v-for="row in comparisonRows" :key="row.label" class="comparison-row"><span>{{row.label}}</span><strong>{{row.first}}</strong><strong>{{row.second}}</strong><em>{{row.leader}}</em></div></div><p class="method">模型综合强度由六维战术评分 55%、历史胜率 25%、细粒度可靠性 20% 构成；有直接交手时最多以 30% 权重进行平滑校正。对手强弱、临场阵容和地图策略仍会造成偏差。</p></template></section>
   </main><main v-else><p>{{error||'正在加载…'}}</p></main>
 </div>
 </template>

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateHeatCells, canonicalPoint, densityOpacity, officialToMap, reliabilityTone, teamPerspectivePoint } from '../src/domain.js'
+import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, reliabilityScore, reliabilityTone, teamPerspectivePoint, teamStrength } from '../src/domain.js'
 
 test('red side remains in official coordinates', () => {
   assert.deepEqual(canonicalPoint(3, 4, '红'), [3, 4])
@@ -40,4 +40,37 @@ test('heatmap seconds aggregate once per side and grid cell', () => {
 test('log heat scale keeps a one-second cell faint', () => {
   assert.ok(densityOpacity(1, 100) < .05)
   assert.equal(densityOpacity(100, 100), .88)
+})
+
+const strongTeam = {
+  team: '强队',
+  summary: { games: 20, win_rate: 80 },
+  scores: { firepower: 85, objective: 80, spatial: 75, defense: 82, resource: 70, adaptability: 78 },
+  reliability: { start_complete_pct: 99, availability_pct: 99, disconnect_game_pct: 3 },
+}
+const weakerTeam = {
+  team: '弱队',
+  summary: { games: 20, win_rate: 35 },
+  scores: { firepower: 40, objective: 45, spatial: 50, defense: 42, resource: 55, adaptability: 48 },
+  reliability: { start_complete_pct: 92, availability_pct: 94, disconnect_game_pct: 15 },
+}
+
+test('team comparison uses tactical, result, and granular reliability inputs', () => {
+  assert.ok(reliabilityScore(strongTeam) > reliabilityScore(weakerTeam))
+  assert.ok(teamStrength(strongTeam) > teamStrength(weakerTeam))
+})
+
+test('matchup estimate is complementary and reports sample confidence', () => {
+  const estimate = matchupEstimate(strongTeam, weakerTeam)
+  assert.equal(estimate.primaryPct + estimate.opponentPct, 100)
+  assert.ok(estimate.primaryPct > 70)
+  assert.equal(estimate.confidence, '中')
+  assert.match(estimate.verdict, /强队/)
+})
+
+test('head-to-head evidence adjusts but does not replace the model', () => {
+  const withoutHistory = matchupEstimate(strongTeam, weakerTeam)
+  const upsetHistory = matchupEstimate(strongTeam, weakerTeam, [{ won: 0 }, { won: 0 }, { won: 0 }])
+  assert.ok(upsetHistory.primaryPct < withoutHistory.primaryPct)
+  assert.ok(upsetHistory.primaryPct > 50)
 })
