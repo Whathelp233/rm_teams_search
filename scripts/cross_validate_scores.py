@@ -25,11 +25,12 @@ FOLDS = ((0.55, 0.70), (0.70, 0.85), (0.85, 1.00))
 RELEASE_RESULT_WEIGHT = 0.10
 RELEASE_SCALES = {"南部赛区": 16.0, "东部赛区": 10.0, "北部赛区": 24.0}
 DIMENSION_WEIGHTS = {
-    "firepower": 0.20, "objective": 0.25, "spatial": 0.15,
-    "defense": 0.18, "resource": 0.14, "adaptability": 0.08,
+    "firepower": 0.18, "objective": 0.32, "spatial": 0.14,
+    "defense": 0.14, "resource": 0.17, "adaptability": 0.05,
 }
 WEIGHT_CANDIDATES = {
     "current": DIMENSION_WEIGHTS,
+    "score_3_4": {"firepower": 0.20, "objective": 0.25, "spatial": 0.15, "defense": 0.18, "resource": 0.14, "adaptability": 0.08},
     "legacy_3_2": {"firepower": 0.18, "objective": 0.20, "spatial": 0.15, "defense": 0.19, "resource": 0.13, "adaptability": 0.15},
     "conservative": {"firepower": 0.20, "objective": 0.25, "spatial": 0.15, "defense": 0.16, "resource": 0.14, "adaptability": 0.10},
     "objective_focus": {"firepower": 0.20, "objective": 0.28, "spatial": 0.14, "defense": 0.15, "resource": 0.14, "adaptability": 0.09},
@@ -152,11 +153,11 @@ def main():
         records = build_records()
         if args.write_fixture:
             FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-            FIXTURE.write_text(json.dumps({"schema_version": "3.4.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            FIXTURE.write_text(json.dumps({"schema_version": "3.5.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     else:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("schema_version") != "3.4.0":
-            raise SystemExit("rolling score fixture does not match score schema 3.4.0")
+        if fixture.get("schema_version") != "3.5.0":
+            raise SystemExit("rolling score fixture does not match score schema 3.5.0")
         records = fixture["records"]
 
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
@@ -229,6 +230,15 @@ def main():
             regional_metrics[region] = metrics(regional_rows)
             candidate_rows.extend(regional_rows)
         report["weight_candidates"][name] = {"regions": regional_metrics, "overall": metrics(candidate_rows)}
+    baseline = report["weight_candidates"]["score_3_4"]
+    release = report["weight_candidates"]["current"]
+    if release["overall"]["brier"] >= baseline["overall"]["brier"] - 0.001:
+        failures.append("score 3.5 weights do not improve chronological Brier by at least 0.001 over score 3.4")
+    if release["overall"]["accuracy"] < baseline["overall"]["accuracy"]:
+        failures.append("score 3.5 weights reduce chronological accuracy versus score 3.4")
+    for region in REGIONS:
+        if release["regions"][region]["brier"] > baseline["regions"][region]["brier"]:
+            failures.append(f"score 3.5 weights worsen {region} chronological Brier versus score 3.4")
     for removed in (None, *DIMENSION_WEIGHTS):
         weights = {key: value for key, value in DIMENSION_WEIGHTS.items() if key != removed}
         total = sum(weights.values())

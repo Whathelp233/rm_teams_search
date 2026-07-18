@@ -59,15 +59,15 @@ def main():
     failures = []
     report = {"schema": index["schema_version"], "regions": {}, "dimensions": {}, "regional_dimensions": {}}
     expected_dimension_weights = {
-        "firepower": 0.20, "objective": 0.25, "spatial": 0.15,
-        "defense": 0.18, "resource": 0.14, "adaptability": 0.08,
+        "firepower": 0.18, "objective": 0.32, "spatial": 0.14,
+        "defense": 0.14, "resource": 0.17, "adaptability": 0.05,
     }
     if not math.isclose(sum(expected_dimension_weights.values()), 1.0):
         failures.append("published tactical dimension weights do not sum to 1")
     for team in teams:
         actual = team["strength_analysis"]["tactical_dimension_weights"]
         if actual != expected_dimension_weights:
-            failures.append(f"{team['team']} tactical dimension weights differ from score 3.4")
+            failures.append(f"{team['team']} tactical dimension weights differ from score 3.5")
     for region in ("南部赛区", "东部赛区", "北部赛区"):
         regional = [team for team in teams if team["summary"]["region"] == region]
         strength = [team["strength_analysis"]["score"] for team in regional]
