@@ -117,7 +117,11 @@ def score_fold(index, payloads, train_ids, directory):
     scored = {}
     for team, (slug, _) in payloads.items():
         payload = json.loads((teams_dir / f"{slug}.json").read_text(encoding="utf-8"))
-        scored[team] = {"strength": payload["strength_analysis"], "scores": payload["scores"]}
+        scored[team] = {
+            "strength": payload["strength_analysis"],
+            "scores": payload["scores"],
+            "opponent_score": payload["opponent_score_analysis"]["score"],
+        }
     return scored, counts
 
 
@@ -147,6 +151,7 @@ def build_records():
                     "fold": fold_number, "region": game["region"], "won": game["won"],
                     "dimension_diff": {dimension: round(first["scores"][dimension] - second["scores"][dimension], 3) for dimension in DIMENSION_WEIGHTS},
                     "result_diff": round(first_strength["result_score"] - second_strength["result_score"], 3),
+                    "opponent_score_diff": round(first["opponent_score"] - second["opponent_score"], 3),
                     "h2h_games": len(direct_history),
                     "h2h_wins": sum(bool(match.get("won")) for match in direct_history),
                 })
@@ -159,11 +164,11 @@ def main():
         records = build_records()
         if args.write_fixture:
             FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-            FIXTURE.write_text(json.dumps({"schema_version": "3.7.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            FIXTURE.write_text(json.dumps({"schema_version": "3.8.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     else:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("schema_version") != "3.7.0":
-            raise SystemExit("rolling score fixture does not match score schema 3.7.0")
+        if fixture.get("schema_version") != "3.8.0":
+            raise SystemExit("rolling score fixture does not match score schema 3.8.0")
         records = fixture["records"]
 
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
@@ -186,7 +191,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "head_to_head_adjustment": {}, "weight_candidates": {}, "dimension_ablation": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "weight_candidates": {}, "dimension_ablation": {}, "blend_grid": {}}
     failures = []
     for region in REGIONS:
         report["regions"][region] = {model: metrics(rows[model][region]) for model in rows}
@@ -252,6 +257,38 @@ def main():
         failures.append("disabling direct-meeting probability blend does not improve chronological Brier")
     if h2h_release["overall"]["accuracy"] < h2h_legacy["overall"]["accuracy"]:
         failures.append("disabling direct-meeting probability blend reduces chronological accuracy")
+    # A transparent Buchholz-like opponent score is useful schedule context,
+    # but BT already performs the scored opponent correction.  Test positive
+    # coefficients explicitly so a future release cannot silently double count it.
+    opponent_candidates = {}
+    for coefficient in (0.0, 0.05, 0.10, 0.25):
+        candidate_by_region = defaultdict(list)
+        candidate_by_fold = defaultdict(list)
+        for record in records:
+            tactical_diff = sum(record["dimension_diff"][key] * weight for key, weight in DIMENSION_WEIGHTS.items())
+            difference = (
+                (1 - RELEASE_RESULT_WEIGHT) * tactical_diff
+                + RELEASE_RESULT_WEIGHT * record["result_diff"]
+                + coefficient * record["opponent_score_diff"]
+            )
+            row = (probability(difference, 0.0, record["region"]), record["won"])
+            candidate_by_region[record["region"]].append(row)
+            candidate_by_fold[record["fold"]].append(row)
+        combined = [row for region in REGIONS for row in candidate_by_region[region]]
+        opponent_candidates[f"coefficient_{coefficient:.2f}"] = {
+            "overall": metrics(combined),
+            "regions": {region: metrics(candidate_by_region[region]) for region in REGIONS},
+            "folds": {str(fold): metrics(candidate_by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
+        }
+    report["opponent_score_adjustment"] = {
+        "selected_coefficient": 0.0,
+        "enters_strength": False,
+        "reason": "Bradley-Terry already corrects schedule; an additional positive opponent-score term is retained only if it improves rolling-origin validation",
+        "candidates": opponent_candidates,
+    }
+    release_opponent = opponent_candidates["coefficient_0.00"]["overall"]
+    if abs(release_opponent["brier"] - report["overall"]["strength"]["brier"]) > 1e-12:
+        failures.append("zero opponent-score coefficient does not reconstruct release strength")
     for name, candidate_weights in WEIGHT_CANDIDATES.items():
         candidate_rows = []
         regional_metrics = {}

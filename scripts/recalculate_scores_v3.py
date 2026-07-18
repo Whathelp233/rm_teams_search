@@ -99,6 +99,62 @@ def sigmoid(value):
     return z / (1.0 + z)
 
 
+def build_opponent_scores(payloads):
+    """Transparent two-level strength-of-schedule score.
+
+    An opponent's win rate is calculated after removing games against the team
+    being evaluated, then receives a Beta(1, 1) prior.  This prevents a team
+    from making its own schedule look stronger merely by beating an opponent.
+    Repeated games in one series do not duplicate that opponent.
+    """
+    records = {}
+    for team, (_, payload) in payloads.items():
+        matches = payload["matches"]
+        records[team] = {
+            "games": len(matches),
+            "wins": sum(bool(match.get("won")) for match in matches),
+            "by_opponent": defaultdict(list),
+        }
+        for match in matches:
+            records[team]["by_opponent"][match["opponent"]].append(bool(match.get("won")))
+
+    first_order = {}
+    for team, record in records.items():
+        rates = []
+        for opponent in record["by_opponent"]:
+            if opponent not in records:
+                continue
+            opponent_record = records[opponent]
+            direct = opponent_record["by_opponent"].get(team, [])
+            other_games = opponent_record["games"] - len(direct)
+            other_wins = opponent_record["wins"] - sum(direct)
+            rates.append((other_wins + 1.0) / (other_games + 2.0))
+        first_order[team] = mean(rates, 0.5)
+
+    raw_scores = {}
+    for team, record in records.items():
+        opponents = [opponent for opponent in record["by_opponent"] if opponent in first_order]
+        second_order = mean((first_order[opponent] for opponent in opponents), 0.5)
+        raw_scores[team] = 100.0 * (0.75 * first_order[team] + 0.25 * second_order)
+
+    scores = {}
+    for team, record in records.items():
+        opponents = [opponent for opponent in record["by_opponent"] if opponent in raw_scores]
+        sample = len(opponents)
+        score = shrink(raw_scores[team], sample, prior=3.0)
+        scores[team] = {
+            "score": rounded(score),
+            "opponent_win_rate_pct": rounded(first_order[team] * 100.0),
+            "opponent_opponent_win_rate_pct": rounded(mean((first_order[opponent] for opponent in opponents), 0.5) * 100.0),
+            "unique_opponents": sample,
+            "direct_matches_excluded": True,
+            "enters_strength": False,
+            "strength_coefficient": 0.0,
+            "method": "75% direct-opponent adjusted win rate + 25% second-order opponent rate; unique opponents; Beta(1,1) prior",
+        }
+    return scores
+
+
 def infer_placements(game_rows):
     """Infer elimination finish from each region's final bracket series."""
     series = {}
@@ -533,11 +589,23 @@ def main():
         team: sum(analyses[name][team]["score"] * DIMENSION_WEIGHTS[name] for name in DIMENSION_WEIGHTS)
         for team in teams
     }
+    opponent_scores = build_opponent_scores(payloads)
+    opponent_ranks = {
+        team: 1 + sum(opponent_scores[other]["score"] > opponent_scores[team]["score"] for other in teams)
+        for team in teams
+    }
+    opponent_region_ranks = {}
+    opponent_region_sizes = {}
+    for team in teams:
+        region = payloads[team][1]["summary"]["region"]
+        regional = [other for other in teams if payloads[other][1]["summary"]["region"] == region]
+        opponent_region_ranks[team] = 1 + sum(opponent_scores[other]["score"] > opponent_scores[team]["score"] for other in regional)
+        opponent_region_sizes[team] = len(regional)
     strength_scores = {team: 0.90 * tactical_scores[team] + 0.10 * result_scores[team] for team in teams}
     overall_ranks = {team: 1 + sum(strength_scores[other] > strength_scores[team] for other in teams) for team in teams}
 
-    index["schema_version"] = "3.7.0"
-    index["data_version"] = "score-3.7.0"
+    index["schema_version"] = "3.8.0"
+    index["data_version"] = "score-3.8.0"
     index["placement_method"] = {
         "format": "参赛手册规定的16进8、8进4、半决赛、季军争夺战和冠军争夺战，结合数据库实际胜负推导",
         "sources": [
@@ -546,7 +614,7 @@ def main():
             "RMUC 2026 北部赛区参赛手册 V2.0.0",
         ],
     }
-    index["scoring_notice"] = "六维3.7：公开逐维度证据充分度，TOP名次与条件样本可信度同时展示；胜率保持滚动回测校准口径"
+    index["scoring_notice"] = "六维3.8：新增剔除直接交手后的二阶对手分用于赛程解释；Bradley–Terry仍是唯一进入综合强度的赛程校正，避免重复加分"
     for team, (path, payload) in payloads.items():
         scores = {name: analyses[name][team]["score"] for name in COMPONENT_WEIGHTS}
         tactical, result, strength = tactical_scores[team], result_scores[team], strength_scores[team]
@@ -554,7 +622,7 @@ def main():
         invalid_points = sum(float(match.get("invalid_position_points") or 0) for match in payload["matches"])
         position_coverage = position_points / max(1.0, position_points + invalid_points)
         confidence = 100.0 * games_by_team[team] / (games_by_team[team] + 8.0) * math.sqrt(position_coverage)
-        payload["schema_version"] = "3.7.0"; payload["data_version"] = "score-3.7.0"
+        payload["schema_version"] = "3.8.0"; payload["data_version"] = "score-3.8.0"
         payload.pop("consistency_analysis", None)
         payload["scores"] = scores
         payload["dimension_ranks"] = dimension_ranks[team]
@@ -567,15 +635,19 @@ def main():
             method = "absolute-anchor and percentile blend with typical/downside aggregation" if name == "defense" else "team fact percentile with games/(games+6) shrinkage"
             if name == "adaptability":
                 method = "paired-condition transfer and residual response with component-specific evidence shrinkage"
-            detail.update({"version": "3.7.0", "method": method})
+            detail.update({"version": "3.8.0", "method": method})
             payload[f"{name}_analysis"] = detail
         payload["defense_analysis"]["excluded"] = excluded[team]
         payload["score_confidence"] = {
             "overall": rounded(confidence), "games": games_by_team[team],
             "position_coverage_pct": rounded(position_coverage * 100), "enters_score": False,
         }
+        payload["opponent_score_analysis"] = {
+            **opponent_scores[team], "rank": opponent_ranks[team],
+            "region_rank": opponent_region_ranks[team], "region_size": opponent_region_sizes[team],
+        }
         payload["strength_analysis"] = {
-            "version": "3.7.0", "score": rounded(strength), "tactical_score": rounded(tactical),
+            "version": "3.8.0", "score": rounded(strength), "tactical_score": rounded(tactical),
             "result_score": rounded(result), "schedule_rating": rounded(ratings[team], 3),
             "tactical_weight": 0.90, "result_weight": 0.10,
             "tactical_dimension_weights": DIMENSION_WEIGHTS,
@@ -585,13 +657,14 @@ def main():
         listing = listings[team]
         listing["scores"] = scores; listing["strength_analysis"] = payload["strength_analysis"]
         listing["score_confidence"] = payload["score_confidence"]
+        listing["opponent_score_analysis"] = payload["opponent_score_analysis"]
         listing["dimension_ranks"] = dimension_ranks[team]
         listing["dimension_confidence"] = dimension_confidence[team]
         listing["overall_rank"] = overall_ranks[team]
         listing["placement"] = placements.get(team)
         compact_write(path, payload)
     compact_write(index_path, index)
-    print(f"recalculated {len(teams)} teams with score schema 3.7.0")
+    print(f"recalculated {len(teams)} teams with score schema 3.8.0")
 
 
 if __name__ == "__main__":
