@@ -8,6 +8,33 @@ export function officialToMap(x, y) {
   return [x, 15 - y]
 }
 
+// Pixel rectangles whose inner wall edges represent the official 28×15 m
+// field. The source JPGs include white margin, perimeter frame and protruding
+// referee structures; those pixels are context, not playable coordinates.
+const rasterFieldRois = {
+  current: { imageWidth: 1683, imageHeight: 938, x: 100, y: 68, width: 1478, height: 789 },
+  historical: { imageWidth: 1285, imageHeight: 691, x: 68, y: 34, width: 1138, height: 606 },
+}
+
+export function rasterMapPlacement(map = 'current') {
+  const roi = rasterFieldRois[map] || rasterFieldRois.current
+  return {
+    offsetX: roi.x * 28 / roi.imageWidth,
+    offsetY: roi.y * 15 / roi.imageHeight,
+    scaleX: roi.width / roi.imageWidth,
+    scaleY: roi.height / roi.imageHeight,
+  }
+}
+
+export function rasterMapPoint(x, y, map = 'current') {
+  const placement = rasterMapPlacement(map)
+  return [placement.offsetX + x * placement.scaleX, placement.offsetY + y * placement.scaleY]
+}
+
+export function rasterMapCenter(map = 'current') {
+  return rasterMapPoint(14, 7.5, map)
+}
+
 // A dual-team timeline must rotate the entire world, never one side at a time.
 // This keeps opponents on opposite sides in the selected team's perspective.
 export function teamPerspectivePoint(x, y, selectedSide) {
