@@ -147,14 +147,31 @@ test('role download manifest sizes and sha256 checksums match generated archives
   }
 })
 
-test('repechage pickem roster resolves all sixteen teams', () => {
+test('tournament pickem rosters and official Swiss thresholds are internally consistent', () => {
   const pickem = readJson('../public/data/repechage.json')
   const index = readJson('../public/data/index.json')
-  assert.equal(pickem.schema_version, 'repechage-pickem-1.0.0')
-  assert.equal(pickem.qualification_places, 4)
-  assert.equal(pickem.teams.length, 16)
-  assert.equal(new Set(pickem.teams.map(team => team.team)).size, 16)
-  for (const team of pickem.teams) {
+  assert.equal(pickem.schema_version, 'tournament-pickem-2.0.0')
+  assert.equal(pickem.repechage.groups, 2)
+  assert.equal(pickem.repechage.group_size, 8)
+  assert.equal(pickem.repechage.swiss_rounds, 3)
+  assert.equal(pickem.repechage.loss_target, 2)
+  assert.equal(pickem.repechage.teams.length, 16)
+  assert.deepEqual(pickem.repechage.teams.reduce((counts, team) => ({ ...counts, [team.tier]: (counts[team.tier] || 0) + 1 }), {}), { 1: 8, 2: 8 })
+  assert.equal(new Set(pickem.repechage.teams.map(team => team.team)).size, 16)
+  for (const team of pickem.repechage.teams) {
+    assert.ok(index.teams.some(listing => listing.team === team.team), team.team)
+    assert.ok(team.battle_name.length > 0, team.team)
+  }
+  assert.equal(pickem.finals.groups, 2)
+  assert.equal(pickem.finals.group_size, 16)
+  assert.equal(pickem.finals.swiss_rounds, 5)
+  assert.equal(pickem.finals.win_target, 3)
+  assert.equal(pickem.finals.loss_target, 3)
+  assert.equal(pickem.finals.teams.length, 32)
+  assert.equal(pickem.finals.teams.filter(team => team.placeholder).length, 4)
+  assert.equal(new Set(pickem.finals.teams.map(team => team.team)).size, 32)
+  assert.deepEqual(pickem.finals.teams.reduce((counts, team) => ({ ...counts, [team.tier]: (counts[team.tier] || 0) + 1 }), {}), { 1: 3, 2: 3, 3: 3, 4: 3, 5: 4, 6: 16 })
+  for (const team of pickem.finals.teams.filter(team => !team.placeholder)) {
     assert.ok(index.teams.some(listing => listing.team === team.team), team.team)
     assert.ok(team.battle_name.length > 0, team.team)
   }

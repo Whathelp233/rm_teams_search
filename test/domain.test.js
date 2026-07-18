@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, repechageGroupProjection, roleFrameSeries, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from '../src/domain.js'
+import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, strengthGrade, summarizeDimensions, swissNextPairings, swissStandings, teamPerspectivePoint, teamStrength } from '../src/domain.js'
 
 test('red side remains in official coordinates', () => {
   assert.deepEqual(canonicalPoint(3, 4, '红'), [3, 4])
@@ -116,13 +116,40 @@ test('matchup estimate is complementary and reports sample confidence', () => {
   assert.match(estimate.verdict, /强队/)
 })
 
-test('repechage group projection conserves one qualification place', () => {
-  const middleTeam = strength => ({ team: `队伍${strength}`, summary: { games: 15, win_rate: strength }, scores: { firepower: strength, objective: strength, spatial: strength, defense: strength, resource: strength, adaptability: strength } })
-  const projection = repechageGroupProjection([strongTeam, weakerTeam, middleTeam(60), middleTeam(50)])
-  assert.equal(projection.pairings.length, 6)
-  assert.ok(Math.abs(projection.teams.reduce((sum, team) => sum + team.advancePct, 0) - 100) <= .2)
-  assert.equal(projection.teams.toSorted((a, b) => b.advancePct - a.advancePct)[0].team, '强队')
-  for (const match of projection.pairings) assert.equal(match.firstPct + match.secondPct, 100)
+test('Swiss simulator pairs by record, avoids rematches, and eliminates at two losses', () => {
+  const team = index => ({ ...strongTeam, team: `队伍${index}`, scores: Object.fromEntries(Object.keys(strongTeam.scores).map(key => [key, 80 - index])) })
+  const teams = Array.from({ length: 8 }, (_, index) => team(index))
+  const rounds = []
+  for (let round = 0; round < 3; round += 1) {
+    const matches = swissNextPairings(teams, rounds, null, 2, 3)
+    assert.equal(matches.length, round < 2 ? 4 : 3)
+    for (const match of matches) {
+      assert.equal(match.firstPct + match.secondPct, 100)
+      match.winner = match.first
+    }
+    rounds.push({ matches })
+  }
+  const pairs = rounds.flatMap(round => round.matches.map(match => [match.first, match.second].sort().join('|')))
+  assert.equal(new Set(pairs).size, pairs.length)
+  const standings = swissStandings(teams, rounds, null, 2, 3)
+  assert.equal(standings.filter(team => team.status === '淘汰').length, 4)
+  assert.equal(standings.filter(team => team.status === '晋级下一阶段').length, 4)
+})
+
+test('national Swiss simulator resolves eight qualifiers at three wins and eight eliminations at three losses', () => {
+  const team = index => ({ ...strongTeam, team: `全国队伍${index}`, scores: Object.fromEntries(Object.keys(strongTeam.scores).map(key => [key, 82 - index])) })
+  const teams = Array.from({ length: 16 }, (_, index) => team(index))
+  const rounds = []
+  for (let round = 1; round <= 5; round += 1) {
+    const matches = swissNextPairings(teams, rounds, 3, 3, 5)
+    assert.equal(matches.length, [8, 8, 8, 6, 3][round - 1])
+    for (const match of matches) match.winner = match.first
+    rounds.push({ round, matches })
+  }
+  const standings = swissStandings(teams, rounds, 3, 3, 5)
+  assert.equal(standings.filter(team => team.status === '晋级').length, 8)
+  assert.equal(standings.filter(team => team.status === '淘汰').length, 8)
+  assert.ok(standings.every(team => Number.isInteger(team.opponentScore)))
 })
 
 test('head-to-head evidence is contextual and does not alter calibrated probability', () => {

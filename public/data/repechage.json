@@ -1,25 +1,41 @@
 {
-  "schema_version": "repechage-pickem-1.0.0",
-  "title": "RoboMaster 2026 全国总决赛复活赛",
-  "dates": "7月31日—8月2日",
-  "qualification_places": 4,
-  "source_note": "参赛名单来自用户提供的官方名单图片；名单排名不分先后。页面分组均为用户自定义或随机生成，不代表官方分组。",
-  "teams": [
-    {"team": "广东工业大学", "battle_name": "DynamicX"},
-    {"team": "桂林电子科技大学", "battle_name": "Evolution"},
-    {"team": "华中科技大学", "battle_name": "狼牙"},
-    {"team": "江南大学霞客湾校区", "battle_name": "SHARK"},
-    {"team": "南方科技大学", "battle_name": "ARTINX"},
-    {"team": "南华大学", "battle_name": "MA"},
-    {"team": "南京航空航天大学金城学院", "battle_name": "Born of Fire"},
-    {"team": "厦门大学嘉庚学院", "battle_name": "TCR"},
-    {"team": "山东理工大学", "battle_name": "齐奇"},
-    {"team": "深圳技术大学", "battle_name": "悍匠"},
-    {"team": "沈阳理工大学", "battle_name": "Ambition"},
-    {"team": "太原科技大学", "battle_name": "NewMaker"},
-    {"team": "西安电子科技大学", "battle_name": "IRobot"},
-    {"team": "应急管理大学", "battle_name": "风暴"},
-    {"team": "中国科学技术大学", "battle_name": "RoboWalker"},
-    {"team": "中国矿业大学", "battle_name": "CUBOT"}
-  ]
+  "schema_version": "tournament-pickem-2.0.0",
+  "rule_source": "RoboMaster 2026 机甲大师超级对抗赛·全国总决赛参赛手册 V2.1.0（2026-07-16）",
+  "repechage": {
+    "title": "复活赛",
+    "dates": "7月31日—8月2日",
+    "format": "A/B组 · 3轮瑞士轮 · BO3",
+    "groups": 2,
+    "group_size": 8,
+    "swiss_rounds": 3,
+    "win_target": null,
+    "loss_target": 2,
+    "stage_result": "未累计2败的8支队伍进入全国赛晋级名额争夺战，双败制决出4个全国赛名额。",
+    "draw_note": "按手册分两档抽签，A/B组各从每档抽取4队。当前分组为用户抽签模拟，不代表官方抽签结果。",
+    "teams": [
+      {"team":"广东工业大学","battle_name":"DynamicX","tier":1},{"team":"南方科技大学","battle_name":"ARTINX","tier":1},{"team":"南华大学","battle_name":"MA","tier":1},{"team":"南京航空航天大学金城学院","battle_name":"Born of Fire","tier":1},{"team":"山东理工大学","battle_name":"齐奇","tier":1},{"team":"西安电子科技大学","battle_name":"IRobot","tier":1},{"team":"中国科学技术大学","battle_name":"RoboWalker","tier":1},{"team":"中国矿业大学","battle_name":"CUBOT","tier":1},
+      {"team":"桂林电子科技大学","battle_name":"Evolution","tier":2},{"team":"华中科技大学","battle_name":"狼牙","tier":2},{"team":"江南大学霞客湾校区","battle_name":"SHARK","tier":2},{"team":"厦门大学嘉庚学院","battle_name":"TCR","tier":2},{"team":"深圳技术大学","battle_name":"悍匠","tier":2},{"team":"沈阳理工大学","battle_name":"Ambition","tier":2},{"team":"太原科技大学","battle_name":"NewMaker","tier":2},{"team":"应急管理大学","battle_name":"风暴","tier":2}
+    ]
+  },
+  "finals": {
+    "title": "全国赛",
+    "dates": "8月4日—8月9日",
+    "format": "A/B组 · 5轮瑞士轮 · BO3",
+    "groups": 2,
+    "group_size": 16,
+    "swiss_rounds": 5,
+    "win_target": 3,
+    "loss_target": 3,
+    "stage_result": "累计3胜晋级16进8双败淘汰赛，累计3败淘汰；之后依次进行16进8、8进4双败赛及四强单败赛。",
+    "draw_note": "按手册六个抽签盒及A1—A16/B1—B16席位抽签。当前分组为用户抽签模拟，不代表官方抽签结果。",
+    "teams": [
+      {"team":"东北大学","battle_name":"TDT","tier":1},{"team":"华南农业大学","battle_name":"Taurus","tier":1},{"team":"中国石油大学（华东）","battle_name":"RPS","tier":1},
+      {"team":"哈尔滨工业大学","battle_name":"I Hiter","tier":2},{"team":"山东科技大学","battle_name":"SmartRobot","tier":2},{"team":"五邑大学","battle_name":"IMCA","tier":2},
+      {"team":"广州城市理工学院","battle_name":"野狼","tier":3},{"team":"哈尔滨工业大学（威海）","battle_name":"HERO","tier":3},{"team":"合肥工业大学（宣城校区）","battle_name":"WDR","tier":3},
+      {"team":"东莞理工学院","battle_name":"ACE","tier":4},{"team":"西北工业大学","battle_name":"WMJ","tier":4},{"team":"浙江大学","battle_name":"Hello World","tier":4},
+      {"team":"电子科技大学中山学院","battle_name":"RoboBraver","tier":5},{"team":"华南理工大学","battle_name":"华南虎","tier":5},{"team":"上海交通大学","battle_name":"交龙","tier":5},{"team":"西安交通大学","battle_name":"笃行","tier":5},
+      {"team":"北京理工大学","battle_name":"追梦","tier":6},{"team":"北京理工大学（珠海）","battle_name":"毅恒","tier":6},{"team":"大连理工大学","battle_name":"凌BUG","tier":6},{"team":"复旦大学","battle_name":"星云EGA","tier":6},{"team":"哈尔滨工业大学（深圳）","battle_name":"南工骁鹰","tier":6},{"team":"华东理工大学","battle_name":"起源","tier":6},{"team":"南京理工大学","battle_name":"Alliance","tier":6},{"team":"深圳大学","battle_name":"RobotPilots","tier":6},{"team":"同济大学","battle_name":"SuperPower","tier":6},{"team":"武汉工程大学","battle_name":"Nautilus","tier":6},{"team":"长安大学","battle_name":"VGD","tier":6},{"team":"仲恺农业工程学院","battle_name":"奇点","tier":6},
+      {"team":"复活赛晋级队伍1","battle_name":"待定","tier":6,"placeholder":true},{"team":"复活赛晋级队伍2","battle_name":"待定","tier":6,"placeholder":true},{"team":"复活赛晋级队伍3","battle_name":"待定","tier":6,"placeholder":true},{"team":"复活赛晋级队伍4","battle_name":"待定","tier":6,"placeholder":true}
+    ]
+  }
 }
