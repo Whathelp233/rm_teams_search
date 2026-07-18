@@ -50,7 +50,17 @@ export function teamStrength(team) {
   const tactical = Object.entries(tacticalWeights).reduce(
     (total, [key, weight]) => total + finite(team?.scores?.[key]) * weight, 0,
   )
-  return .7 * tactical + .3 * finite(team?.summary?.win_rate)
+  return .7 * tactical + .3 * finite(team?.summary?.win_rate ?? team?.win_rate)
+}
+
+export function strengthGrade(score) {
+  const value = finite(score)
+  if (value >= 80) return 'S'
+  if (value >= 70) return 'A'
+  if (value >= 60) return 'B'
+  if (value >= 50) return 'C'
+  if (value >= 40) return 'D'
+  return 'E'
 }
 
 export function matchupEstimate(primary, opponent, headToHead = []) {

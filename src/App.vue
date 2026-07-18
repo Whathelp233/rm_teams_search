@@ -4,7 +4,7 @@ import { init, use } from 'echarts/core'
 import { BarChart, RadarChart } from 'echarts/charts'
 import { GridComponent, RadarComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { aggregateHeatCells, densityOpacity, matchupEstimate, officialToMap, teamPerspectivePoint } from './domain.js'
+import { aggregateHeatCells, densityOpacity, matchupEstimate, officialToMap, strengthGrade, teamPerspectivePoint, teamStrength } from './domain.js'
 
 use([BarChart, RadarChart, GridComponent, RadarComponent, TooltipComponent, CanvasRenderer])
 const base = import.meta.env.BASE_URL
@@ -16,6 +16,8 @@ let scoreChart, damageChart, timer
 const colors = ['#ff5268','#ff9e54','#ffd166','#9b7bff','#ef70cb','#ff355f','#48a8ff','#58d3ff','#41e1a6','#6f8dff','#61b8ff','#16c7e8']
 const teams = computed(() => index.value.teams.filter(t => (region.value === '全部' || t.region === region.value) && (!query.value || t.team.includes(query.value))))
 const slug = computed(() => index.value.teams.find(t => t.team === selected.value?.team)?.slug)
+const strength = computed(() => teamStrength(selected.value))
+const grade = computed(() => strengthGrade(strength.value))
 const filteredHeat = computed(() => (heat.value?.cells || []).filter(c => (heatSide.value === '全部' || c[0] === heatSide.value) && (heatRobot.value === '全部' || c[1] === heatRobot.value) && c[2] >= heatFrom.value && c[2] <= heatTo.value))
 const aggregatedHeat = computed(() => aggregateHeatCells(filteredHeat.value, heatXY, heatView.value === 'canonical'))
 const maxHeat = computed(() => Math.max(1, ...aggregatedHeat.value.map(c => c.samples)))
@@ -105,11 +107,11 @@ onBeforeUnmount(() => clearInterval(timer))
 
 <template>
 <div class="shell">
-  <aside><div class="brand"><span>RMUC 2026</span><strong>战术情报库 v2</strong></div><input v-model="query" placeholder="搜索队伍"><select v-model="region"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in teams" :key="t.slug" :class="{active:selected?.team===t.team}" @click="loadTeam(t.slug)"><span>{{t.team}}</span><small>{{t.wins}}/{{t.games}} · {{t.region}}</small></button></div></aside>
+  <aside><div class="brand"><span>RMUC 2026</span><strong>战术情报库 v2</strong></div><input v-model="query" placeholder="搜索队伍"><select v-model="region"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in teams" :key="t.slug" :class="{active:selected?.team===t.team}" @click="loadTeam(t.slug)"><span>{{t.team}}</span><small>{{t.wins}}/{{t.games}} · {{t.region}} · 强度 {{strengthGrade(teamStrength(t))}}</small></button></div></aside>
   <main v-if="selected">
     <div class="notice">仅使用规则手册实场图和通信协议 28×15m 官方坐标；行为树内部地图、区域 YAML 与 SCAU 叠加图不参与映射。</div>
     <header><div><p>{{selected.summary.region}} <em v-if="selected.champion">{{selected.champion}}</em></p><h1>{{selected.team}}</h1></div><div class="record"><strong>{{selected.summary.wins}}–{{selected.summary.games-selected.summary.wins}}</strong><span>胜率 {{selected.summary.win_rate.toFixed(1)}}%</span></div></header>
-    <section class="kpis"><article><span>场均输出</span><strong>{{selected.summary.avg_damage_dealt?.toFixed(0)}}</strong></article><article><span>场均基地伤害</span><strong>{{selected.summary.avg_base_damage?.toFixed(0)}}</strong></article><article><span>场均前哨伤害</span><strong>{{selected.summary.avg_outpost_damage?.toFixed(0)}}</strong></article><article><span>检测命中 / 发弹</span><strong>{{((selected.summary.shot_accuracy||0)*100).toFixed(1)}}%</strong></article></section>
+    <section class="kpis"><article><span>场均输出</span><strong>{{selected.summary.avg_damage_dealt?.toFixed(0)}}</strong></article><article><span>场均基地伤害</span><strong>{{selected.summary.avg_base_damage?.toFixed(0)}}</strong></article><article><span>场均前哨伤害</span><strong>{{selected.summary.avg_outpost_damage?.toFixed(0)}}</strong></article><article><span>综合强度评级</span><strong class="strength-grade" :data-grade="grade">{{grade}} · {{strength.toFixed(1)}}</strong></article></section>
     <section class="grid-two"><article class="panel"><h2>战术分维度评分</h2><div id="score-chart" class="chart"></div></article><article class="panel"><h2>基地与其他目标伤害来源</h2><div id="damage-chart" class="chart"></div></article></section>
     <section class="panel"><div class="section-head"><h2>秒级热力图</h2><span>真实红方 / 真实蓝方 / 己方归一化</span></div><div class="toolbar"><select v-model="heatView"><option value="actual">实际场地图</option><option value="canonical">己方归一化</option></select><select v-model="heatSide"><option>全部</option><option>红</option><option>蓝</option></select><select v-model="heatRobot"><option>全部</option><option>英雄</option><option>工程</option><option>步兵3</option><option>步兵4</option><option>空中</option><option>哨兵</option></select><label>从 <input type="number" v-model.number="heatFrom"></label><label>到 <input type="number" v-model.number="heatTo"></label><label>地图遮罩 <input type="range" v-model.number="heatMaskOpacity" min="0" max=".75" step=".05"></label></div><p class="method">颜色表示筛选范围内落在 0.5m 格子的累计在场秒数；先按格聚合，再使用对数色阶。最高密度 {{maxHeat}} 车·秒。地图采用“实场底图—热力层—设施轮廓遮罩”三层显示，可调遮罩强度。</p><svg class="field" viewBox="0 0 28 15"><image :href="`${base}maps/field-current.jpg`" width="28" height="15" preserveAspectRatio="none" opacity="1"/><rect v-for="c in aggregatedHeat" :key="`${c.side}-${c.x}-${c.y}`" :x="c.x-.25" :y="c.y-.25" width=".5" height=".5" :fill="heatColor(c)" :opacity="heatOpacity(c)"/><image class="map-mask" :href="`${base}maps/field-current.jpg`" width="28" height="15" preserveAspectRatio="none" :opacity="heatMaskOpacity"/></svg></section>
     <section class="panel"><div class="section-head"><h2>逐局时间轴</h2><span>1 Hz · 双方全车 · 速度 / 尾迹 / 事件</span></div><div class="match-grid"><button v-for="m in selected.matches" :key="m.game_id" :class="{active:activeGame?.game_id===m.game_id}" @click="loadGame(m)"><b>{{m.won?'胜':'负'}} · {{m.opponent}}</b><span>{{m.rule_version}} · {{m.side}}方</span><small>局 {{m.game_id}} · {{fmtSecond(m.duration_sec)}}</small></button></div></section>

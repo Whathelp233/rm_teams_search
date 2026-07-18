@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, teamPerspectivePoint, teamStrength } from '../src/domain.js'
+import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, strengthGrade, teamPerspectivePoint, teamStrength } from '../src/domain.js'
 
 test('red side remains in official coordinates', () => {
   assert.deepEqual(canonicalPoint(3, 4, '红'), [3, 4])
@@ -49,6 +49,16 @@ const weakerTeam = {
 
 test('team comparison uses tactical and historical result inputs', () => {
   assert.ok(teamStrength(strongTeam) > teamStrength(weakerTeam))
+})
+
+test('strength grade uses the same composite strength as comparison', () => {
+  assert.equal(strengthGrade(80), 'S')
+  assert.equal(strengthGrade(70), 'A')
+  assert.equal(strengthGrade(60), 'B')
+  assert.equal(strengthGrade(50), 'C')
+  assert.equal(strengthGrade(40), 'D')
+  assert.equal(strengthGrade(39.9), 'E')
+  assert.equal(teamStrength({ ...strongTeam, summary: undefined, win_rate: 80 }), teamStrength(strongTeam))
 })
 
 test('matchup estimate is complementary and reports sample confidence', () => {
