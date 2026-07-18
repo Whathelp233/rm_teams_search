@@ -168,6 +168,7 @@ export function summarizeDimensions(team) {
     strength: team?.strength_analysis || null,
     consistency: team?.consistency_analysis || null,
     confidence: team?.score_confidence || null,
+    dimensionConfidence: team?.dimension_confidence || null,
   }
 }
 

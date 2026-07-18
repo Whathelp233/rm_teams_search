@@ -516,6 +516,18 @@ def main():
         }
         for team in teams
     }
+    dimension_confidence = {
+        team: {
+            dimension: rounded(100.0 * sum(
+                analyses[dimension][team]["weights"][component]
+                * analyses[dimension][team]["component_samples"].get(component, 0)
+                / (analyses[dimension][team]["component_samples"].get(component, 0) + 6.0)
+                for component in analyses[dimension][team]["weights"]
+            ))
+            for dimension in COMPONENT_WEIGHTS
+        }
+        for team in teams
+    }
     result_scores = {team: shrink(percentile(rating_values, ratings[team]), games_by_team[team]) for team in teams}
     tactical_scores = {
         team: sum(analyses[name][team]["score"] * DIMENSION_WEIGHTS[name] for name in DIMENSION_WEIGHTS)
@@ -524,8 +536,8 @@ def main():
     strength_scores = {team: 0.90 * tactical_scores[team] + 0.10 * result_scores[team] for team in teams}
     overall_ranks = {team: 1 + sum(strength_scores[other] > strength_scores[team] for other in teams) for team in teams}
 
-    index["schema_version"] = "3.6.0"
-    index["data_version"] = "score-3.6.0"
+    index["schema_version"] = "3.7.0"
+    index["data_version"] = "score-3.7.0"
     index["placement_method"] = {
         "format": "参赛手册规定的16进8、8进4、半决赛、季军争夺战和冠军争夺战，结合数据库实际胜负推导",
         "sources": [
@@ -534,7 +546,7 @@ def main():
             "RMUC 2026 北部赛区参赛手册 V2.0.0",
         ],
     }
-    index["scoring_notice"] = "六维3.6：直接交手仅作背景，不再覆盖滚动回测校准的基础胜率；综合权重保持3.5时间外最优口径"
+    index["scoring_notice"] = "六维3.7：公开逐维度证据充分度，TOP名次与条件样本可信度同时展示；胜率保持滚动回测校准口径"
     for team, (path, payload) in payloads.items():
         scores = {name: analyses[name][team]["score"] for name in COMPONENT_WEIGHTS}
         tactical, result, strength = tactical_scores[team], result_scores[team], strength_scores[team]
@@ -542,10 +554,11 @@ def main():
         invalid_points = sum(float(match.get("invalid_position_points") or 0) for match in payload["matches"])
         position_coverage = position_points / max(1.0, position_points + invalid_points)
         confidence = 100.0 * games_by_team[team] / (games_by_team[team] + 8.0) * math.sqrt(position_coverage)
-        payload["schema_version"] = "3.6.0"; payload["data_version"] = "score-3.6.0"
+        payload["schema_version"] = "3.7.0"; payload["data_version"] = "score-3.7.0"
         payload.pop("consistency_analysis", None)
         payload["scores"] = scores
         payload["dimension_ranks"] = dimension_ranks[team]
+        payload["dimension_confidence"] = dimension_confidence[team]
         payload["overall_rank"] = overall_ranks[team]
         payload["placement"] = placements.get(team)
         for name, score in scores.items():
@@ -554,7 +567,7 @@ def main():
             method = "absolute-anchor and percentile blend with typical/downside aggregation" if name == "defense" else "team fact percentile with games/(games+6) shrinkage"
             if name == "adaptability":
                 method = "paired-condition transfer and residual response with component-specific evidence shrinkage"
-            detail.update({"version": "3.6.0", "method": method})
+            detail.update({"version": "3.7.0", "method": method})
             payload[f"{name}_analysis"] = detail
         payload["defense_analysis"]["excluded"] = excluded[team]
         payload["score_confidence"] = {
@@ -562,7 +575,7 @@ def main():
             "position_coverage_pct": rounded(position_coverage * 100), "enters_score": False,
         }
         payload["strength_analysis"] = {
-            "version": "3.6.0", "score": rounded(strength), "tactical_score": rounded(tactical),
+            "version": "3.7.0", "score": rounded(strength), "tactical_score": rounded(tactical),
             "result_score": rounded(result), "schedule_rating": rounded(ratings[team], 3),
             "tactical_weight": 0.90, "result_weight": 0.10,
             "tactical_dimension_weights": DIMENSION_WEIGHTS,
@@ -573,11 +586,12 @@ def main():
         listing["scores"] = scores; listing["strength_analysis"] = payload["strength_analysis"]
         listing["score_confidence"] = payload["score_confidence"]
         listing["dimension_ranks"] = dimension_ranks[team]
+        listing["dimension_confidence"] = dimension_confidence[team]
         listing["overall_rank"] = overall_ranks[team]
         listing["placement"] = placements.get(team)
         compact_write(path, payload)
     compact_write(index_path, index)
-    print(f"recalculated {len(teams)} teams with score schema 3.6.0")
+    print(f"recalculated {len(teams)} teams with score schema 3.7.0")
 
 
 if __name__ == "__main__":
