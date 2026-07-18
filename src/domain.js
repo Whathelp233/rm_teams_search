@@ -61,10 +61,10 @@ export function densityOpacity(samples, maximum) {
 
 const tacticalWeights = {
   firepower: .18,
-  objective: .20,
-  spatial: .17,
-  defense: .20,
-  resource: .10,
+  objective: .18,
+  spatial: .18,
+  defense: .18,
+  resource: .13,
   adaptability: .15,
 }
 
