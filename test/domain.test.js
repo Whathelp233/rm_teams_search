@@ -59,10 +59,10 @@ test('team comparison uses tactical and historical result inputs', () => {
   assert.ok(teamStrength(strongTeam) > teamStrength(weakerTeam))
 })
 
-test('composite strength gives defense a 12.6 percent effective weight', () => {
+test('composite strength gives defense an 8.1 percent effective weight', () => {
   const baseline = { summary: { win_rate: 50 }, scores: { firepower: 50, objective: 50, spatial: 50, defense: 0, resource: 50, adaptability: 50 } }
   const defended = { ...baseline, scores: { ...baseline.scores, defense: 100 } }
-  assert.ok(Math.abs(teamStrength(defended) - teamStrength(baseline) - 12.6) < 1e-9)
+  assert.ok(Math.abs(teamStrength(defended) - teamStrength(baseline) - 8.1) < 1e-9)
 })
 
 test('strength grade uses the same composite strength as comparison', () => {

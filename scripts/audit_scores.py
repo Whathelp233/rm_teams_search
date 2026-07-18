@@ -59,15 +59,29 @@ def main():
     failures = []
     report = {"schema": index["schema_version"], "regions": {}, "dimensions": {}, "regional_dimensions": {}}
     expected_dimension_weights = {
-        "firepower": 0.18, "objective": 0.32, "spatial": 0.14,
-        "defense": 0.14, "resource": 0.17, "adaptability": 0.05,
+        "firepower": 0.15, "objective": 0.50, "spatial": 0.11,
+        "defense": 0.09, "resource": 0.14, "adaptability": 0.01,
+    }
+    expected_component_weights = {
+        "firepower": {"clean_output": 0.35, "accuracy": 0.15, "kill_conversion": 0.25, "pressure_uptime": 0.25},
+        "objective": {"outpost_pressure": 0.10, "outpost_conversion": 0.25, "base_pressure": 0.15, "base_conversion": 0.35, "strategic_tools": 0.15},
+        "spatial": {"relative_territory": 0.25, "forward_presence": 0.30, "neutral_control": 0.35, "field_coverage": 0.10},
+        "defense": {"trade_resilience": 0.35, "mobile_resilience": 0.25, "outpost_denial": 0.15, "base_denial": 0.15, "collapse_resistance": 0.10},
+        "resource": {"acquisition": 0.40, "utilization": 0.05, "combat_conversion": 0.10, "objective_conversion": 0.25, "thermal_efficiency": 0.20},
+        "adaptability": {"side_transfer": 0.10, "opponent_robustness": 0.10, "strong_opponent_residual": 0.20, "setback_adjustment": 0.30, "rematch_adjustment": 0.30},
     }
     if not math.isclose(sum(expected_dimension_weights.values()), 1.0):
         failures.append("published tactical dimension weights do not sum to 1")
     for team in teams:
         actual = team["strength_analysis"]["tactical_dimension_weights"]
         if actual != expected_dimension_weights:
-            failures.append(f"{team['team']} tactical dimension weights differ from score 3.8")
+            failures.append(f"{team['team']} tactical dimension weights differ from score 3.9")
+        alignment = team["strength_analysis"].get("victory_rule_alignment", {})
+        if alignment.get("direct_dimension_weight") != 0.74 or alignment.get("enabling_dimension_weight") != 0.26:
+            failures.append(f"{team['team']} victory-rule weight split differs from score 3.9")
+        for dimension, expected in expected_component_weights.items():
+            if team[f"{dimension}_analysis"]["weights"] != expected:
+                failures.append(f"{team['team']} {dimension} component weights differ from score 3.9")
         opponent = team.get("opponent_score_analysis", {})
         if opponent.get("enters_strength") is not False or opponent.get("strength_coefficient") != 0.0:
             failures.append(f"{team['team']} transparent opponent score must not duplicate BT strength correction")
@@ -170,6 +184,7 @@ def main():
             failures.append(f"{region} matchup bias {bias:+.3f} outside ±0.06")
 
     report["tactical_dimension_weights"] = expected_dimension_weights
+    report["component_weights"] = expected_component_weights
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if failures:
         raise SystemExit("score audit failed:\n- " + "\n- ".join(failures))
