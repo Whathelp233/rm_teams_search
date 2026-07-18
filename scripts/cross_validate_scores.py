@@ -54,6 +54,27 @@ def metrics(rows):
     }
 
 
+def confidence_calibration(rows):
+    buckets = [[] for _ in range(5)]
+    for predicted, outcome in rows:
+        confidence = max(predicted, 1.0 - predicted)
+        correct = (predicted >= 0.5) == bool(outcome)
+        bucket = min(4, max(0, int((confidence - 0.5) / 0.1)))
+        buckets[bucket].append((confidence, float(correct)))
+    result, ece = [], 0.0
+    for index, bucket in enumerate(buckets):
+        if not bucket:
+            continue
+        predicted = sum(item[0] for item in bucket) / len(bucket)
+        observed = sum(item[1] for item in bucket) / len(bucket)
+        ece += len(bucket) / max(1, len(rows)) * abs(predicted - observed)
+        result.append({
+            "range": f"{50 + index * 10}–{60 + index * 10}%", "games": len(bucket),
+            "predicted": predicted, "observed": observed,
+        })
+    return {"ece": ece, "bins": result}
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--write-fixture", action="store_true", help="regenerate the derived CI fixture from the private SQLite source")
@@ -131,11 +152,11 @@ def main():
         records = build_records()
         if args.write_fixture:
             FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-            FIXTURE.write_text(json.dumps({"schema_version": "3.3.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            FIXTURE.write_text(json.dumps({"schema_version": "3.4.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     else:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("schema_version") != "3.3.0":
-            raise SystemExit("rolling score fixture does not match score schema 3.3.0")
+        if fixture.get("schema_version") != "3.4.0":
+            raise SystemExit("rolling score fixture does not match score schema 3.4.0")
         records = fixture["records"]
 
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
@@ -158,7 +179,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "weight_candidates": {}, "dimension_ablation": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "weight_candidates": {}, "dimension_ablation": {}, "blend_grid": {}}
     failures = []
     for region in REGIONS:
         report["regions"][region] = {model: metrics(rows[model][region]) for model in rows}
@@ -169,6 +190,7 @@ def main():
         combined = [row for region in REGIONS for row in rows[model][region]]
         report["overall"][model] = metrics(combined)
     candidate_all = []
+    candidate_rows_by_region = {}
     for region in REGIONS:
         scale = RELEASE_SCALES[region]
         candidate_rows = [
@@ -176,6 +198,7 @@ def main():
             for dimension_diff, result_diff, won in observations[region]
         ]
         report["candidate"][region] = {"result_weight": RELEASE_RESULT_WEIGHT, "scale": scale, **metrics(candidate_rows)}
+        candidate_rows_by_region[region] = candidate_rows
         candidate_all.extend(candidate_rows)
         if report["candidate"][region]["brier"] >= 0.25:
             failures.append(f"{region} candidate chronological Brier {report['candidate'][region]['brier']:.3f} >= 0.25")
@@ -188,6 +211,12 @@ def main():
         failures.append(f"overall candidate chronological Brier {report['candidate']['全部']['brier']:.3f} >= 0.24")
     if report["candidate"]["全部"]["accuracy"] < 0.60:
         failures.append(f"overall candidate chronological accuracy {report['candidate']['全部']['accuracy']:.3f} < 0.60")
+    for region, calibration_rows in [*candidate_rows_by_region.items(), ("全部", candidate_all)]:
+        calibration = confidence_calibration(calibration_rows)
+        report["calibration"][region] = calibration
+        threshold = 0.06 if region == "全部" else 0.10
+        if calibration["ece"] >= threshold:
+            failures.append(f"{region} confidence calibration ECE {calibration['ece']:.3f} >= {threshold:.2f}")
     for name, candidate_weights in WEIGHT_CANDIDATES.items():
         candidate_rows = []
         regional_metrics = {}
