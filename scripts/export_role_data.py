@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Export auditable per-role RMUC data for the static site and downloads.
 
-Robot state is preserved at the source 1 Hz grain.  Team summaries exclude the
+Robot state is preserved at the source 1 Hz grain. Team summaries exclude the
 first and last ten seconds only for availability/stability metrics; exports keep
-the complete timeline.  Hit events identify the victim and ammunition type but
-not the shooter, so this exporter never attributes dealt damage to a robot role.
+the complete timeline. Hit events identify the victim and ammunition type but
+not the shooter. Dealt damage is therefore an explicitly labelled estimate:
+42mm is role-exclusive, while 17mm is distributed across opposing roles that
+fired in the hit second or the preceding second. Every hit is allocated once.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = ROOT.parent / "sql" / "rmuc_2026_region_dataset.sqlite"
 DEFAULT_DATA = ROOT / "public" / "data"
 DEFAULT_DOWNLOADS = ROOT / "public" / "downloads" / "roles"
-SCHEMA_VERSION = "role-data-1.0.0"
+SCHEMA_VERSION = "role-data-1.1.0"
 ROLES = (
     ("英雄", "hero", "second"),
     ("工程", "engineer", "second"),
@@ -43,6 +45,10 @@ FRAME_COLUMNS = [
     "shots42", "total_coins", "remaining_coins", "vulnerable",
 ]
 EVENT_COLUMNS = ["second", "type", "category", "value", "target_robot_id", "target_type", "note", "robot_id"]
+DAMAGE_ESTIMATE_COLUMNS = [
+    "second", "estimated_damage", "target_robot_id", "target_type", "ammo",
+    "confidence_pct", "candidate_roles", "basis",
+]
 CSV_COLUMNS = [
     "record_type", "region", "match_no", "schedule", "round_no", "game_id",
     "web_game_id", "started_at", "duration_sec", "team", "opponent", "side",
@@ -61,12 +67,18 @@ RANK_METRICS = {
     "shots_per_game": "desc",
     "high_heat_seconds_per_game": "asc",
     "position_coverage_pct": "desc",
+    "estimated_damage_per_game": "desc",
+    "estimated_base_damage_per_game": "desc",
+    "estimated_outpost_damage_per_game": "desc",
+    "estimated_robot_damage_per_game": "desc",
+    "estimated_damage_confidence_pct": "desc",
     "hits": "desc",
     "damage": "desc",
     "hit_game_pct": "desc",
     "median_first_hit_sec": "asc",
     "gate_events": "desc",
 }
+FIRING_ROLES = {"英雄", "步兵3", "步兵4", "哨兵", "空中"}
 
 
 def parse_args():
@@ -126,7 +138,84 @@ def valid_position(row):
     return x is not None and y is not None and 0 <= x <= 28 and 0 <= y <= 15 and not (x == 0 and y == 0)
 
 
-def game_summary(frames, events, match):
+def estimate_damage_attribution(connection):
+    """Allocate combat hit damage to roles without asserting a shooter identity."""
+    shots = defaultdict(Counter)
+    team_by_side = {}
+    for row in connection.execute("SELECT DISTINCT game_id,阵营 side,学校名 team FROM timeseries"):
+        team_by_side[(row["game_id"], row["side"])] = row["team"]
+    shot_query = """
+        SELECT game_id,时刻秒 second,机器人类型 role,阵营 side,类别 ammo
+        FROM events WHERE 事件类型='发弹' AND 类别 IN ('17mm','42mm')
+        ORDER BY game_id,时刻秒,rowid
+    """
+    for row in connection.execute(shot_query):
+        if row["role"] in FIRING_ROLES:
+            shots[(row["game_id"], row["side"], row["ammo"], float(row["second"]))][row["role"]] += 1
+
+    attributed = defaultdict(list)
+    hit_query = """
+        SELECT game_id,时刻秒 second,robot_id target_robot_id,机器人类型 target_type,
+          阵营 victim_side,类别 ammo,数值 value
+        FROM events WHERE 事件类型='受击' AND 类别 IN ('17mm','42mm') AND 数值<0
+        ORDER BY game_id,时刻秒,rowid
+    """
+    for hit in connection.execute(hit_query):
+        second = float(hit["second"])
+        attacker_side = "蓝" if hit["victim_side"] == "红" else "红"
+        attacker_team = team_by_side.get((hit["game_id"], attacker_side))
+        if not attacker_team:
+            continue
+        if hit["ammo"] == "42mm":
+            nearby = sum(shots[(hit["game_id"], attacker_side, "42mm", second - offset)]["英雄"] for offset in (0, 1))
+            shares = {"英雄": 1.0}
+            confidence = 98.0 if nearby else 90.0
+            basis = "42mm兵种唯一+时间窗" if nearby else "42mm兵种唯一"
+        else:
+            weights = Counter()
+            for offset, time_weight in ((0, 1.0), (1, 0.7)):
+                for role, count in shots[(hit["game_id"], attacker_side, "17mm", second - offset)].items():
+                    weights[role] += count * time_weight
+            total_weight = sum(weights.values())
+            if not total_weight:
+                continue
+            shares = {role: weight / total_weight for role, weight in weights.items()}
+            concentration = sum(share * share for share in shares.values())
+            same_second = sum(shots[(hit["game_id"], attacker_side, "17mm", second)].values())
+            confidence = 100 * (0.90 if same_second else 0.70) * concentration
+            basis = "17mm同秒/前1秒发弹份额"
+        damage = max(0.0, -float(hit["value"] or 0))
+        candidates = sorted(shares)
+        for role, share in shares.items():
+            attributed[(attacker_team, hit["game_id"], role)].append([
+                rounded(second), rounded(damage * share, 3), hit["target_robot_id"], hit["target_type"],
+                hit["ammo"], rounded(confidence), candidates, basis,
+            ])
+    return attributed
+
+
+def damage_estimate_summary(rows):
+    total = sum(float(row[1] or 0) for row in rows)
+    by_target = Counter()
+    confidence_damage = high_confidence = 0.0
+    for row in rows:
+        damage = float(row[1] or 0)
+        by_target[row[3] or "未知"] += damage
+        confidence_damage += damage * float(row[5] or 0) / 100
+        if float(row[5] or 0) >= 70:
+            high_confidence += damage
+    return {
+        "estimated_damage_dealt": rounded(total),
+        "estimated_robot_damage": rounded(sum(value for key, value in by_target.items() if key not in {"基地", "前哨站"})),
+        "estimated_outpost_damage": rounded(by_target.get("前哨站", 0)),
+        "estimated_base_damage": rounded(by_target.get("基地", 0)),
+        "estimated_damage_confidence_pct": rounded(100 * confidence_damage / total if total else None),
+        "high_confidence_estimated_damage": rounded(high_confidence),
+        "estimated_hit_events": len(rows),
+    }
+
+
+def game_summary(frames, events, match, damage_estimates=None):
     duration = max(0.0, float(match.get("duration_sec") or 0))
     analysis = [row for row in frames if 10 <= float(row[0]) <= duration - 10]
     alive_analysis = [row for row in analysis if float(row[1] or 0) > 0]
@@ -198,6 +287,7 @@ def game_summary(frames, events, match):
         "damage_received": {key: rounded(value) for key, value in sorted(damage.items())},
         "buffs": dict(sorted(buffs.items())),
         "event_counts": dict(sorted(event_counts.items())),
+        **damage_estimate_summary(damage_estimates or []),
     }
 
 
@@ -210,6 +300,11 @@ def team_summary(games, team_matches):
     shots = sum(item["shots"] for item in facts)
     role_present_games = len(games)
     position_base = sum(item["alive_seconds"] for item in facts)
+    estimated_damage = sum(item["estimated_damage_dealt"] or 0 for item in facts)
+    estimated_confidence_damage = sum(
+        (item["estimated_damage_dealt"] or 0) * (item["estimated_damage_confidence_pct"] or 0) / 100
+        for item in facts
+    )
     weighted = lambda key, weight: rounded(sum((item[key] or 0) * item[weight] for item in facts) / max(1, sum(item[weight] for item in facts)))
     return {
         "games": game_count,
@@ -243,6 +338,14 @@ def team_summary(games, team_matches):
         "firing_seconds": sum(item["firing_seconds"] for item in facts),
         "combat_damage_received": rounded(combat_damage),
         "combat_damage_per_alive_min": rounded(combat_damage * 60 / max(1, alive_seconds)),
+        "estimated_damage_dealt": rounded(estimated_damage),
+        "estimated_damage_per_game": rounded(estimated_damage / max(1, role_present_games)),
+        "estimated_robot_damage_per_game": rounded(sum(item["estimated_robot_damage"] or 0 for item in facts) / max(1, role_present_games)),
+        "estimated_outpost_damage_per_game": rounded(sum(item["estimated_outpost_damage"] or 0 for item in facts) / max(1, role_present_games)),
+        "estimated_base_damage_per_game": rounded(sum(item["estimated_base_damage"] or 0 for item in facts) / max(1, role_present_games)),
+        "estimated_damage_confidence_pct": rounded(100 * estimated_confidence_damage / estimated_damage if estimated_damage else None),
+        "high_confidence_estimated_damage": rounded(sum(item["high_confidence_estimated_damage"] or 0 for item in facts)),
+        "estimated_hit_events": sum(item["estimated_hit_events"] for item in facts),
         "damage_received": dict(sum((Counter(item["damage_received"]) for item in facts), Counter())),
         "buffs": dict(sum((Counter(item["buffs"]) for item in facts), Counter())),
         "window_rule": "availability/stability summaries exclude first and last 10 seconds",
@@ -334,7 +437,7 @@ def dart_payloads(events, slugs, listings, team_matches, matches):
     return payloads, entries
 
 
-def robot_payloads(connection, role, role_slug, events, slugs, listings, team_matches, matches, csv_writer):
+def robot_payloads(connection, role, role_slug, events, damage_attribution, slugs, listings, team_matches, matches, csv_writer):
     grouped_events = defaultdict(lambda: defaultdict(list))
     for event in events:
         grouped_events[event["team"]][event["game_id"]].append([
@@ -390,22 +493,42 @@ def robot_payloads(connection, role, role_slug, events, slugs, listings, team_ma
             if not frames:
                 continue
             event_data = grouped_events[team].get(match["game_id"], [])
+            damage_estimates = damage_attribution.get((team, match["game_id"], role), [])
+            for estimate in damage_estimates:
+                csv_writer.writerow({
+                    "record_type": "damage_estimate", "region": match.get("region"), "match_no": match.get("match_no"),
+                    "schedule": match.get("schedule"), "round_no": match.get("round_no"), "game_id": match["game_id"],
+                    "web_game_id": match.get("web_game_id"), "started_at": match.get("started_at"),
+                    "duration_sec": match.get("duration_sec"), "team": team, "opponent": match.get("opponent"),
+                    "side": match.get("side"), "won": int(bool(match.get("won"))), "robot_type": role,
+                    "second": estimate[0], "event_type": "推定造成伤害", "event_category": estimate[4],
+                    "event_value": estimate[1], "event_target_robot_id": estimate[2],
+                    "event_target_type": estimate[3], "event_note": f"置信度{estimate[5]}%;{estimate[7]};候选{','.join(estimate[6])}",
+                })
             games.append({
                 "game_id": match["game_id"], "opponent": match["opponent"], "side": match["side"],
                 "won": bool(match["won"]), "duration_sec": match["duration_sec"], "rule_version": match.get("rule_version"),
-                "robot_id": robot_ids.get((team, match["game_id"])), "summary": game_summary(frames, event_data, match),
-                "frames": frames, "events": event_data,
+                "robot_id": robot_ids.get((team, match["game_id"])),
+                "summary": game_summary(frames, event_data, match, damage_estimates),
+                "frames": frames, "events": event_data, "damage_estimates": damage_estimates,
             })
         summary = team_summary(games, team_matches[team])
         if role == "工程":
             for key in ("shots", "shots_per_game", "shots_per_alive_min", "firing_seconds"):
                 summary[key] = None
+            for key in (
+                "estimated_damage_dealt", "estimated_damage_per_game", "estimated_robot_damage_per_game",
+                "estimated_outpost_damage_per_game", "estimated_base_damage_per_game",
+                "estimated_damage_confidence_pct", "high_confidence_estimated_damage", "estimated_hit_events",
+            ):
+                summary[key] = None
         payload = {
             "schema_version": SCHEMA_VERSION, "mode": "second", "role": role, "role_slug": role_slug,
             "team": team, "team_slug": slugs[team], "region": listings[team]["region"],
-            "frame_columns": FRAME_COLUMNS, "event_columns": EVENT_COLUMNS, "summary": summary, "games": games,
+            "frame_columns": FRAME_COLUMNS, "event_columns": EVENT_COLUMNS,
+            "damage_estimate_columns": DAMAGE_ESTIMATE_COLUMNS, "summary": summary, "games": games,
             "limitations": [
-                "受击事件没有射手身份，不能把造成伤害或命中率归因到该兵种。",
+                "造成伤害为推定值：42mm按兵种唯一性归因；17mm按同秒/前1秒发弹份额分配；不代表射手身份或命中率。",
                 "在场率与稳定性汇总排除比赛前10秒和后10秒；frames保留完整时间。",
             ],
         }
@@ -462,6 +585,7 @@ def main():
     args.downloads.mkdir(parents=True)
     connection = sqlite3.connect(args.db)
     connection.row_factory = sqlite3.Row
+    damage_attribution = estimate_damage_attribution(connection)
     role_index = []
     manifest_files = []
     for role, role_slug, mode in ROLES:
@@ -473,7 +597,10 @@ def main():
                 wrapper = io.TextIOWrapper(handle, encoding="utf-8", newline="")
                 writer = csv.DictWriter(wrapper, fieldnames=CSV_COLUMNS, extrasaction="ignore")
                 writer.writeheader()
-                payloads, entries = robot_payloads(connection, role, role_slug, events, slugs, listings, team_matches, matches, writer)
+                payloads, entries = robot_payloads(
+                    connection, role, role_slug, events, damage_attribution,
+                    slugs, listings, team_matches, matches, writer,
+                )
                 holder["payloads"], holder["entries"] = payloads, entries
                 wrapper.flush()
             gzip_write(csv_path, write_csv)
@@ -491,9 +618,10 @@ def main():
         role_listing = {
             "schema_version": SCHEMA_VERSION, "role": role, "role_slug": role_slug, "mode": mode,
             "frame_columns": FRAME_COLUMNS if mode == "second" else [], "event_columns": EVENT_COLUMNS,
+            "damage_estimate_columns": DAMAGE_ESTIMATE_COLUMNS if mode == "second" else [],
             "teams": entries, "counts": {"teams": sum(bool(payload["games"]) for payload in payloads), "games": sum(len(payload["games"]) for payload in payloads), "rows": rows, "events": event_count},
             "downloads": {"csv_gz": f"downloads/roles/{role_slug}.csv.gz", "json_gz": f"downloads/roles/{role_slug}.json.gz"},
-            "ranking_note": "事实指标数值名次，不合成兵种总分。",
+            "ranking_note": "事实指标与标注为推定的伤害指标分别排名，不合成兵种总分。",
         }
         compact_write(role_root / role_slug / "index.json", role_listing)
         role_index.append({key: role_listing[key] for key in ("role", "role_slug", "mode", "counts", "downloads")})
@@ -504,7 +632,7 @@ def main():
         "schema_version": SCHEMA_VERSION, "roles": role_index,
         "total_second_rows": sum(item["counts"]["rows"] for item in role_index),
         "total_events": sum(item["counts"]["events"] for item in role_index),
-        "limitations": ["受击事件没有射手身份，兵种数据不推断造成伤害或命中率。"],
+        "limitations": ["受击事件没有射手身份；造成伤害按弹种与1秒发弹时间窗推定，并单独提供置信度。"],
     })
     compact_write(args.downloads / "manifest.json", {
         "schema_version": SCHEMA_VERSION, "generated_from": args.db.name, "roles": role_index, "files": manifest_files,
