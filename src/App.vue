@@ -4,17 +4,19 @@ import { init, use } from 'echarts/core'
 import { BarChart, RadarChart } from 'echarts/charts'
 import { GridComponent, RadarComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { aggregateHeatCells, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, roleMetrics, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from './domain.js'
+import { aggregateHeatCells, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, roleMetrics, strengthGrade, summarizeDimensions, swissNextPairings, swissStandings, teamPerspectivePoint, teamStrength } from './domain.js'
 
 use([BarChart, RadarChart, GridComponent, RadarComponent, TooltipComponent, CanvasRenderer])
 const base = import.meta.env.BASE_URL
-const dataRevision = 'score-3.9.0-role-data-1.1.0'
+const dataRevision = 'score-3.9.0-role-data-1.1.0-tournament-2.0.0'
 const index = ref({ teams: [] }), selected = ref(null), query = ref(''), region = ref('全部'), error = ref('')
 const heat = ref(null), heatSide = ref('全部'), heatRobot = ref('全部'), heatView = ref('actual'), heatFrom = ref(0), heatTo = ref(420), heatMaskOpacity = ref(.34)
 const gameData = ref(null), activeGame = ref(null), time = ref(0), playing = ref(false), speed = ref(1), tail = ref(20), mapMode = ref('raster'), routeView = ref('actual')
 const visibleRobots = ref({}), compareSlug = ref(''), compareTeam = ref(null)
 const viewMode = ref('team'), roleCatalog = ref({ roles: [] }), selectedRoleSlug = ref('hero'), roleIndex = ref(null), roleTeam = ref(null)
 const roleRegion = ref('全部'), roleQuery = ref(''), roleMetric = ref('availability_pct'), activeRoleGameId = ref(null), roleTime = ref(0)
+const tournamentConfig = ref(null), tournamentMode = ref('repechage'), tournamentTeams = ref({ repechage: [], finals: [] }), tournamentGroups = ref({ repechage: [[], []], finals: [[], []] }), tournamentRounds = ref({ repechage: { A: [], B: [] }, finals: { A: [], B: [] } }), finalsQualifiers = ref([null, null, null, null]), tournamentBusy = ref(false)
+const tournamentLabels = ['A', 'B']
 let scoreChart, damageChart, timer
 const colors = ['#ff5268','#ff9e54','#ffd166','#9b7bff','#ef70cb','#ff355f','#48a8ff','#58d3ff','#41e1a6','#6f8dff','#61b8ff','#16c7e8']
 const rankedTeams = computed(() => rankTeamsByStrength(index.value.teams))
@@ -81,6 +83,14 @@ const roleTrailPoints = computed(() => activeRoleFrames.value.filter(frame => fr
   const actual = officialToMap(frame.x, frame.y)
   return rasterMapPoint(actual[0], actual[1], 'current').join(',')
 }).join(' '))
+const activeTournament = computed(() => tournamentConfig.value?.[tournamentMode.value] || null)
+const activeTournamentTeams = computed(() => tournamentTeams.value[tournamentMode.value] || [])
+const tournamentTeamMap = computed(() => new Map(activeTournamentTeams.value.map(team => [team.team, team])))
+const tournamentBoards = computed(() => (tournamentGroups.value[tournamentMode.value] || []).map((names, index) => {
+  const members = names.map(name => tournamentTeamMap.value.get(name)).filter(Boolean)
+  const label = tournamentLabels[index], rounds = tournamentRounds.value[tournamentMode.value]?.[label] || []
+  return { label, members, rounds, standings: swissStandings(members, rounds, activeTournament.value?.win_target, activeTournament.value?.loss_target, activeTournament.value?.swiss_rounds) }
+}))
 const shownEvents = computed(() => (gameData.value?.events || []).filter(e => e.second <= time.value))
 const currentFrame = computed(() => {
   const frames = gameData.value?.frames || []; let found = []
@@ -136,6 +146,108 @@ function roleFramePoint(frame) {
   return rasterMapPoint(actual[0], actual[1], 'current')
 }
 function fetchData(path) { return fetch(`${base}${path}?v=${dataRevision}`, { cache: 'no-store' }) }
+function saveTournament() {
+  localStorage.setItem('rmuc-tournament-pickem-2', JSON.stringify({ groups: tournamentGroups.value, rounds: tournamentRounds.value, finalsQualifiers: finalsQualifiers.value }))
+}
+function shuffle(values) {
+  const result = [...values]
+  for (let index = result.length - 1; index > 0; index -= 1) { const target = Math.floor(Math.random() * (index + 1)); [result[index], result[target]] = [result[target], result[index]] }
+  return result
+}
+function randomizeTournament() {
+  const config = activeTournament.value
+  if (!config) return
+  const groups = [[], []]
+  for (const tier of [...new Set(config.teams.map(team => team.tier))].sort()) {
+    const names = shuffle(config.teams.filter(team => team.tier === tier).map(team => team.team))
+    const firstCount = tournamentMode.value === 'finals' ? ({ 1: 2, 2: 1, 3: 2, 4: 1, 5: 2, 6: 8 }[tier] || names.length / 2) : names.length / 2
+    groups[0].push(...names.slice(0, firstCount)); groups[1].push(...names.slice(firstCount))
+  }
+  tournamentGroups.value = { ...tournamentGroups.value, [tournamentMode.value]: groups }
+  resetTournamentResults(); saveTournament()
+}
+function moveTournamentTeam(team, targetIndex) {
+  const target = Number(targetIndex), mode = tournamentMode.value, groups = tournamentGroups.value[mode].map(group => [...group])
+  const source = groups.findIndex(group => group.includes(team))
+  if (source < 0 || source === target) return
+  const tier = activeTournament.value.teams.find(item => item.team === team)?.tier
+  const displaced = [...groups[target]].reverse().find(name => activeTournament.value.teams.find(item => item.team === name)?.tier === tier)
+  if (!displaced) return
+  groups[source] = groups[source].map(name => name === team ? displaced : name)
+  groups[target] = groups[target].map(name => name === displaced ? team : name)
+  tournamentGroups.value = { ...tournamentGroups.value, [mode]: groups }
+  resetTournamentResults(); saveTournament()
+}
+function resetTournamentResults() {
+  tournamentRounds.value = { ...tournamentRounds.value, [tournamentMode.value]: { A: [], B: [] } }
+  saveTournament()
+}
+function startSwissRound(board) {
+  const config = activeTournament.value
+  const matches = swissNextPairings(board.members, board.rounds, config.win_target, config.loss_target, config.swiss_rounds)
+  if (!matches.length) return
+  const modeRounds = { ...tournamentRounds.value[tournamentMode.value], [board.label]: [...board.rounds, { round: board.rounds.length + 1, matches }] }
+  tournamentRounds.value = { ...tournamentRounds.value, [tournamentMode.value]: modeRounds }; saveTournament()
+}
+function setSwissWinner(group, roundIndex, matchIndex, winner) {
+  const mode = tournamentMode.value
+  const groupRounds = tournamentRounds.value[mode][group].map((round, index) => index !== roundIndex ? round : { ...round, matches: round.matches.map((match, matchAt) => matchAt === matchIndex ? { ...match, winner } : match) })
+  tournamentRounds.value = { ...tournamentRounds.value, [mode]: { ...tournamentRounds.value[mode], [group]: groupRounds } }; saveTournament()
+}
+function autoSwissRound(board) {
+  let rounds = tournamentRounds.value[tournamentMode.value][board.label]
+  if (!rounds.length || rounds.at(-1).matches.every(match => match.winner)) startSwissRound({ ...board, rounds })
+  rounds = tournamentRounds.value[tournamentMode.value][board.label]
+  if (!rounds.length || rounds.at(-1).matches.every(match => match.winner)) return
+  const index = rounds.length - 1
+  rounds[index].matches.forEach((match, matchIndex) => setSwissWinner(board.label, index, matchIndex, match.firstPct >= match.secondPct ? match.first : match.second))
+}
+function tournamentDisplay(name) {
+  const team = tournamentTeamMap.value.get(name)
+  return team?.display_team || name
+}
+function buildPlaceholder(item, selectedName = null) {
+  const selected = tournamentTeams.value.repechage.find(team => team.team === selectedName)
+  if (selected) return { ...selected, team: item.team, display_team: selected.team, battle_name: selected.battle_name, tier: item.tier, placeholder: true }
+  return { team: item.team, display_team: item.team, battle_name: '待定', tier: item.tier, placeholder: true, region: '待定', summary: { games: 0, win_rate: 50, region: '待定' }, scores: { firepower: 50, objective: 50, spatial: 50, defense: 50, resource: 50, adaptability: 50 }, strength_analysis: { result_score: 50 } }
+}
+function refreshFinalsPlaceholders() {
+  const known = tournamentTeams.value.finals.filter(team => !team.placeholder)
+  const placeholders = tournamentConfig.value.finals.teams.filter(team => team.placeholder).map((item, index) => buildPlaceholder(item, finalsQualifiers.value[index]))
+  tournamentTeams.value = { ...tournamentTeams.value, finals: [...known, ...placeholders] }
+}
+function setFinalsQualifier(indexAt, value) {
+  finalsQualifiers.value = finalsQualifiers.value.map((name, index) => index === indexAt ? (value || null) : name === value ? null : name)
+  refreshFinalsPlaceholders()
+  tournamentRounds.value = { ...tournamentRounds.value, finals: { A: [], B: [] } }; saveTournament()
+}
+async function loadTournament() {
+  if (tournamentConfig.value || tournamentBusy.value) return
+  tournamentBusy.value = true
+  try {
+    const response = await fetchData('data/repechage.json')
+    if (!response.ok) throw new Error('赛事竞猜名单加载失败')
+    tournamentConfig.value = await response.json()
+    const loaded = {}
+    for (const mode of ['repechage', 'finals']) {
+      loaded[mode] = await Promise.all(tournamentConfig.value[mode].teams.map(async item => {
+        if (item.placeholder) return buildPlaceholder(item)
+        const listing = index.value.teams.find(team => team.team === item.team)
+        if (!listing) throw new Error(`${item.team} 与战术数据库无法对齐`)
+        return { ...await (await fetchData(`data/teams/${listing.slug}.json`)).json(), battle_name: item.battle_name, tier: item.tier }
+      }))
+    }
+    tournamentTeams.value = loaded
+    let restored = null
+    try { restored = JSON.parse(localStorage.getItem('rmuc-tournament-pickem-2') || 'null') } catch { restored = null }
+    if (restored?.groups?.repechage?.flat().length === 16 && restored?.groups?.finals?.flat().length === 32) {
+      tournamentGroups.value = restored.groups; tournamentRounds.value = restored.rounds || tournamentRounds.value; finalsQualifiers.value = restored.finalsQualifiers || finalsQualifiers.value
+      refreshFinalsPlaceholders()
+    } else { tournamentMode.value = 'repechage'; randomizeTournament(); tournamentMode.value = 'finals'; randomizeTournament(); tournamentMode.value = 'repechage' }
+  } finally { tournamentBusy.value = false }
+}
+function switchTournament(mode) { tournamentMode.value = mode }
+function switchView(mode) { viewMode.value = mode; if (mode === 'repechage') loadTournament() }
 async function loadTeam(teamSlug) {
   playing.value = false; gameData.value = null; activeGame.value = null
   const [teamRes, heatRes] = await Promise.all([fetchData(`data/teams/${teamSlug}.json`), fetchData(`data/heatmaps/${teamSlug}.json`)])
@@ -182,8 +294,34 @@ onBeforeUnmount(() => clearInterval(timer))
 
 <template>
 <div class="shell">
-  <aside><div class="brand"><span>RMUC 2026</span><strong>战术情报库 v3</strong></div><div class="view-tabs"><button :class="{active:viewMode==='team'}" @click="viewMode='team'">队伍分析</button><button :class="{active:viewMode==='role'}" @click="viewMode='role'">兵种分析</button></div><template v-if="viewMode==='team'"><input v-model="query" placeholder="搜索队伍"><select v-model="region"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in teams" :key="t.slug" :class="{active:selected?.team===t.team}" @click="loadTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.strengthRank}} · {{t.wins}}/{{t.games}} · {{t.region}}<template v-if="t.placement"> · {{t.placement.label}}</template> · 强度 {{strengthGrade(teamStrength(t))}}</small></button></div></template><template v-else><select :value="selectedRoleSlug" @change="loadRoleIndex($event.target.value)"><option v-for="role in roleCatalog.roles" :key="role.role_slug" :value="role.role_slug">{{role.role}}</option></select><select v-model="roleMetric"><option v-for="([key,definition]) in availableRoleMetrics" :key="key" :value="key">按{{definition.label}}排序</option></select><input v-model="roleQuery" placeholder="搜索队伍"><select v-model="roleRegion"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in roleTeams" :key="t.slug" :class="{active:roleTeam?.team===t.team}" @click="loadRoleTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.factRank}} · {{roleMetrics[roleMetric].label}} {{roleValue(t.factValue,roleMetrics[roleMetric].suffix)}} · {{t.region}}</small></button></div></template></aside>
-  <main v-if="viewMode==='role' && roleTeam && roleIndex" class="role-main">
+  <aside><div class="brand"><span>RMUC 2026</span><strong>战术情报库 v3</strong></div><div class="view-tabs"><button :class="{active:viewMode==='team'}" @click="switchView('team')">队伍</button><button :class="{active:viewMode==='role'}" @click="switchView('role')">兵种</button><button :class="{active:viewMode==='repechage'}" @click="switchView('repechage')">赛事竞猜</button></div><template v-if="viewMode==='team'"><input v-model="query" placeholder="搜索队伍"><select v-model="region"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in teams" :key="t.slug" :class="{active:selected?.team===t.team}" @click="loadTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.strengthRank}} · {{t.wins}}/{{t.games}} · {{t.region}}<template v-if="t.placement"> · {{t.placement.label}}</template> · 强度 {{strengthGrade(teamStrength(t))}}</small></button></div></template><template v-else-if="viewMode==='role'"><select :value="selectedRoleSlug" @change="loadRoleIndex($event.target.value)"><option v-for="role in roleCatalog.roles" :key="role.role_slug" :value="role.role_slug">{{role.role}}</option></select><select v-model="roleMetric"><option v-for="([key,definition]) in availableRoleMetrics" :key="key" :value="key">按{{definition.label}}排序</option></select><input v-model="roleQuery" placeholder="搜索队伍"><select v-model="roleRegion"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in roleTeams" :key="t.slug" :class="{active:roleTeam?.team===t.team}" @click="loadRoleTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.factRank}} · {{roleMetrics[roleMetric].label}} {{roleValue(t.factValue,roleMetrics[roleMetric].suffix)}} · {{t.region}}</small></button></div></template><template v-else><div class="pick-sidebar"><b>赛事 Pick'Em</b><button :class="{active:tournamentMode==='repechage'}" @click="switchTournament('repechage')">复活赛 · 16 队</button><button :class="{active:tournamentMode==='finals'}" @click="switchTournament('finals')">全国赛 · 32 队</button><span v-for="board in tournamentBoards" :key="board.label">{{board.label}}组 · {{board.rounds.length}} / {{activeTournament?.swiss_rounds||0}} 轮</span><small>分组、赛果保存在当前浏览器</small></div></template></aside>
+  <main v-if="viewMode==='repechage'" class="pickem-main">
+    <p v-if="tournamentBusy && !tournamentConfig">正在加载赛事名单与胜率模型…</p>
+    <template v-else-if="activeTournament">
+      <div class="tournament-switch"><button :class="{active:tournamentMode==='repechage'}" @click="switchTournament('repechage')">复活赛</button><button :class="{active:tournamentMode==='finals'}" @click="switchTournament('finals')">全国赛</button></div>
+      <div class="notice">{{activeTournament.draw_note}}</div>
+      <header><div><p>{{activeTournament.dates}} · {{activeTournament.format}}</p><h1>{{activeTournament.title}} Major Pick'Em</h1></div><div class="tournament-actions"><button class="random-button" @click="randomizeTournament">重新模拟抽签</button><button class="random-button secondary" @click="resetTournamentResults">重置赛果</button></div></header>
+      <section v-if="tournamentMode==='finals'" class="panel qualifier-panel"><div class="section-head"><h2>填入 4 支复活赛晋级队</h2><span>未确定时可保留占位队</span></div><div class="qualifier-selects"><label v-for="(_,indexAt) in finalsQualifiers" :key="indexAt">晋级队 {{indexAt+1}}<select :value="finalsQualifiers[indexAt]||''" @change="setFinalsQualifier(indexAt,$event.target.value)"><option value="">待定</option><option v-for="team in tournamentTeams.repechage" :key="team.team" :value="team.team">{{team.team}} · {{team.battle_name}}</option></select></label></div></section>
+      <section class="pickem-grid">
+        <article v-for="(board,groupIndex) in tournamentBoards" :key="board.label" class="panel pick-group swiss-board">
+          <div class="section-head"><h2>{{board.label}} 组</h2><span>{{board.members.length}} 队 · {{activeTournament.swiss_rounds}} 轮</span></div>
+          <div class="draw-list">
+            <div v-for="team in board.members" :key="team.team" class="pick-team">
+              <div class="pick-team-main"><b>{{tournamentDisplay(team.team)}}</b><small>{{team.battle_name}} · 第{{team.tier}}档 · {{team.placeholder?'资格占位':`全局 #${team.overall_rank}`}}</small><span>模型强度 <strong>{{teamStrength(team).toFixed(1)}}</strong> · {{board.standings.find(item=>item.team===team.team)?.wins||0}}–{{board.standings.find(item=>item.team===team.team)?.losses||0}} · {{board.standings.find(item=>item.team===team.team)?.status}}</span></div>
+              <select :value="groupIndex" :aria-label="`${tournamentDisplay(team.team)}分组`" @change="moveTournamentTeam(team.team,$event.target.value)"><option v-for="(_,target) in tournamentLabels" :key="target" :value="target">{{tournamentLabels[target]}}组</option></select>
+            </div>
+          </div>
+          <div class="round-actions"><button v-if="!board.rounds.length" @click="startSwissRound(board)">生成第 1 轮对阵</button><button v-else-if="board.rounds.length<activeTournament.swiss_rounds && board.rounds.at(-1).matches.every(match=>match.winner)" @click="startSwissRound(board)">生成第 {{board.rounds.length+1}} 轮对阵</button><button v-if="board.rounds.length<activeTournament.swiss_rounds || board.rounds.some(round=>round.matches.some(match=>!match.winner))" @click="autoSwissRound(board)">模型自动推演本轮</button></div>
+          <div class="swiss-rounds">
+            <section v-for="(round,roundIndex) in board.rounds" :key="round.round" class="swiss-round"><h3>第 {{round.round}} 轮</h3><div v-for="(match,matchIndex) in round.matches" :key="`${match.first}-${match.second}`" class="swiss-match"><button :class="{winner:match.winner===match.first}" @click="setSwissWinner(board.label,roundIndex,matchIndex,match.first)"><span>{{tournamentDisplay(match.first)}}</span><strong>{{match.firstPct}}%</strong></button><em>BO3</em><button :class="{winner:match.winner===match.second}" @click="setSwissWinner(board.label,roundIndex,matchIndex,match.second)"><strong>{{match.secondPct}}%</strong><span>{{tournamentDisplay(match.second)}}</span></button></div></section>
+          </div>
+          <details class="standings" open><summary>实时积分榜</summary><div v-for="(record,rankAt) in board.standings" :key="record.team" :class="['standing-row',record.status]"><b>#{{rankAt+1}} {{tournamentDisplay(record.team)}}</b><span>{{record.wins}}胜 {{record.losses}}负 · 对手分 {{record.opponentScore>0?'+':''}}{{record.opponentScore}}</span><em>{{record.status}}</em></div></details>
+        </article>
+      </section>
+      <p class="method">赛制门槛来自全国总决赛参赛手册 V2.1.0：复活赛 A/B 各 8 队进行 3 轮瑞士轮，累计 2 负淘汰，其余队进入 4 个全国赛名额的后续争夺；全国赛 A/B 各 16 队进行 5 轮瑞士轮，3 胜晋级、3 负淘汰。模拟首轮按抽签序号高低位配对，后续按胜负、手册定义的对手分排序，优先相邻战绩且避免重复交手；尚无官方基地净血量与全队伤害同分数据时，以模型强度处理排序冲突。页面胜率与自动赛果是战术数据库模型估计，不是官方赛果。</p>
+    </template>
+  </main>
+  <main v-else-if="viewMode==='role' && roleTeam && roleIndex" class="role-main">
     <div class="notice">造成伤害是兵种级推定：42mm 按兵种唯一性归因，17mm 按同秒/前 1 秒发弹份额分配；不是射手身份或命中率。原始秒级数据完整保留。</div>
     <header><div><p>{{roleTeam.region}} · {{roleTeam.mode==='second'?'完整秒级状态':'完整事件记录'}}</p><h1>{{roleTeam.team}} · {{roleTeam.role}}</h1></div><div class="role-downloads"><a :href="`${base}${roleIndex.downloads.csv_gz}`">下载 CSV.gz</a><a :href="`${base}${roleIndex.downloads.json_gz}`">下载 JSON.gz</a></div></header>
     <template v-if="roleTeam.mode==='second'">

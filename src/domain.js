@@ -296,3 +296,66 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
     verdict,
   }
 }
+
+export function swissStandings(teams, rounds = [], winTarget = null, lossTarget = 3, maxRounds = 5) {
+  const records = new Map((teams || []).map(team => [team.team, { team: team.team, wins: 0, losses: 0, opponents: [] }]))
+  for (const round of rounds || []) for (const match of round.matches || []) {
+    if (!match.winner || !records.has(match.first) || !records.has(match.second)) continue
+    const loser = match.winner === match.first ? match.second : match.first
+    records.get(match.winner).wins += 1; records.get(loser).losses += 1
+    records.get(match.first).opponents.push(match.second); records.get(match.second).opponents.push(match.first)
+  }
+  const completeRounds = (rounds || []).filter(round => round.matches?.length && round.matches.every(match => match.winner)).length
+  return [...records.values()].map(record => ({
+    ...record,
+    opponentScore: record.opponents.reduce((total, opponent) => {
+      const opposingRecord = records.get(opponent)
+      return total + (opposingRecord ? opposingRecord.wins - opposingRecord.losses : 0)
+    }, 0),
+    status: winTarget && record.wins >= winTarget ? '晋级'
+      : record.losses >= lossTarget ? '淘汰'
+        : completeRounds >= maxRounds ? '晋级下一阶段' : '比赛中',
+  })).sort((first, second) => second.wins - first.wins || first.losses - second.losses || second.opponentScore - first.opponentScore || first.team.localeCompare(second.team, 'zh-CN'))
+}
+
+export function swissNextPairings(teams, rounds = [], winTarget = null, lossTarget = 3, maxRounds = 5) {
+  const members = [...(teams || [])]
+  const standings = swissStandings(members, rounds, winTarget, lossTarget, maxRounds)
+  const completed = (rounds || []).filter(round => round.matches?.length && round.matches.every(match => match.winner)).length
+  if (completed >= maxRounds || (rounds || []).some(round => round.matches?.some(match => !match.winner))) return []
+  const activeNames = new Set(standings.filter(record => record.status === '比赛中').map(record => record.team))
+  const active = members.filter(team => activeNames.has(team.team))
+  if (!rounds.length) return active.slice(0, active.length / 2).reduce((pairs, team, index) => {
+    const opponent = active[active.length - 1 - index]
+    if (opponent) pairs.push(makeSwissPair(team, opponent))
+    return pairs
+  }, [])
+  const recordMap = new Map(standings.map(record => [record.team, record]))
+  const history = new Set()
+  for (const round of rounds) for (const match of round.matches || []) history.add([match.first, match.second].sort().join('|'))
+  const pool = [...active].sort((first, second) => {
+    const a = recordMap.get(first.team), b = recordMap.get(second.team)
+    return b.wins - a.wins || a.losses - b.losses || b.opponentScore - a.opponentScore || teamStrength(second) - teamStrength(first)
+  })
+  const pairs = []
+  while (pool.length >= 2) {
+    const first = pool.shift()
+    const firstRecord = recordMap.get(first.team)
+    let bestIndex = 0, bestScore = Infinity
+    for (let index = 0; index < pool.length; index += 1) {
+      const candidate = pool[index], candidateRecord = recordMap.get(candidate.team)
+      const rematch = history.has([first.team, candidate.team].sort().join('|')) ? 10000 : 0
+      const recordGap = Math.abs(firstRecord.wins - candidateRecord.wins) * 1000 + Math.abs(firstRecord.losses - candidateRecord.losses) * 500
+      const strengthGap = Math.abs(teamStrength(first) - teamStrength(candidate))
+      const score = rematch + recordGap + strengthGap
+      if (score < bestScore) { bestScore = score; bestIndex = index }
+    }
+    pairs.push(makeSwissPair(first, pool.splice(bestIndex, 1)[0]))
+  }
+  return pairs
+}
+
+function makeSwissPair(first, second) {
+  const estimate = matchupEstimate(first, second)
+  return { first: first.team, second: second.team, firstPct: estimate.primaryPct, secondPct: estimate.opponentPct, confidence: estimate.confidence, winner: null }
+}
