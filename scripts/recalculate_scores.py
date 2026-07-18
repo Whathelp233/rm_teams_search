@@ -27,6 +27,11 @@ TACTICAL_WEIGHTS = {
     "resource": 0.13,
     "adaptability": 0.15,
 }
+SPATIAL_WEIGHTS = {
+    "mobility_intensity": 0.20,
+    "attack_depth": 0.40,
+    "deep_pressure": 0.40,
+}
 COMBAT_CATEGORIES = {"17mm", "42mm", "飞镖"}
 
 
@@ -45,6 +50,13 @@ def compact_write(path, payload):
     path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
 
 
+def percentile(values, value):
+    """Midrank percentile: ties share the same neutral position."""
+    below = sum(item < value for item in values)
+    equal = sum(item == value for item in values)
+    return 100.0 * (below + 0.5 * equal) / max(1, len(values))
+
+
 def stability(values):
     usable = [float(value) for value in values if value is not None and math.isfinite(float(value))]
     if not usable:
@@ -59,6 +71,8 @@ def main():
     args = parse_args()
     index_path = args.data / "index.json"
     index = json.loads(index_path.read_text(encoding="utf-8"))
+    index["schema_version"] = "2.2.0"
+    index["data_version"] = "score-2.2.0"
     listings = {item["team"]: item for item in index["teams"]}
     payloads = {}
     for team, listing in listings.items():
@@ -101,6 +115,57 @@ def main():
             outputs.append(damage[(match["game_id"], match["opponent"])]["robot"] * 420.0 / duration)
         offensive_baseline[team] = statistics.mean(outputs) if outputs else 0.0
     global_offense = statistics.median(offensive_baseline.values())
+
+    # Spatial 2.2 measures actual territorial advance. The former score mixed
+    # average distance with position validity, allowing telemetry quality to
+    # account for half of a team's supposed map control. Position validity is
+    # now retained only as a confidence/coverage field.
+    spatial_raw = {}
+    for team, (_, payload) in payloads.items():
+        mobility = []
+        depth = []
+        pressure = []
+        valid_points = 0.0
+        invalid_points = 0.0
+        for match in payload["matches"]:
+            duration = max(1.0, float(match.get("duration_sec") or 0))
+            mobility.append(float(match.get("distance_m") or 0) * 420.0 / duration)
+            if match.get("mean_attack_depth_m") is not None:
+                depth.append(float(match["mean_attack_depth_m"]))
+            pressure.append(100.0 * float(match.get("deep_pressure_seconds") or 0) / duration)
+            valid_points += float(match.get("valid_position_points") or 0)
+            invalid_points += float(match.get("invalid_position_points") or 0)
+        spatial_raw[team] = {
+            "mobility_m_per_420": statistics.mean(mobility) if mobility else 0.0,
+            "mean_attack_depth_m": statistics.mean(depth) if depth else 0.0,
+            "deep_pressure_pct": statistics.mean(pressure) if pressure else 0.0,
+            "position_coverage_pct": 100.0 * valid_points / max(1.0, valid_points + invalid_points),
+        }
+    spatial_vectors = {
+        key: [metrics[key] for metrics in spatial_raw.values()]
+        for key in ("mobility_m_per_420", "mean_attack_depth_m", "deep_pressure_pct")
+    }
+    for team, (path, payload) in payloads.items():
+        raw = spatial_raw[team]
+        components = {
+            "mobility_intensity": percentile(spatial_vectors["mobility_m_per_420"], raw["mobility_m_per_420"]),
+            "attack_depth": percentile(spatial_vectors["mean_attack_depth_m"], raw["mean_attack_depth_m"]),
+            "deep_pressure": percentile(spatial_vectors["deep_pressure_pct"], raw["deep_pressure_pct"]),
+        }
+        spatial = sum(components[key] * weight for key, weight in SPATIAL_WEIGHTS.items())
+        payload["scores"]["spatial"] = rounded(spatial)
+        payload["summary"]["spatial_score"] = rounded(spatial)
+        payload["spatial_analysis"] = {
+            "version": "2.2.0",
+            "score": rounded(spatial),
+            "components": {key: rounded(value) for key, value in components.items()},
+            "weights": SPATIAL_WEIGHTS,
+            "raw": {key: rounded(value) for key, value in raw.items()},
+            "position_coverage_is_confidence_only": True,
+            "duration_normalized_to_sec": 420,
+        }
+        listings[team]["scores"]["spatial"] = rounded(spatial)
+        compact_write(path, payload)
 
     defense_values = []
     for team, (path, payload) in payloads.items():
@@ -181,6 +246,8 @@ def main():
         payload["scores"]["adaptability"] = rounded(consistency)
         payload["summary"]["defense_score"] = rounded(defense)
         payload["summary"]["adaptability_score"] = rounded(consistency)
+        payload["schema_version"] = "2.2.0"
+        payload["data_version"] = "score-2.2.0"
         payload["defense_analysis"] = {
             "version": "2.1.0",
             "score": rounded(defense),
@@ -213,7 +280,7 @@ def main():
         tactical_score = sum(payload["scores"][key] * weight for key, weight in TACTICAL_WEIGHTS.items())
         strength = 0.75 * tactical_score + 0.25 * result_score
         analysis = {
-            "version": "2.1.0",
+            "version": "2.2.0",
             "score": rounded(strength),
             "tactical_score": rounded(tactical_score),
             "result_score": rounded(result_score),
