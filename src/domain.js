@@ -70,6 +70,16 @@ export function summarizeDimensions(team) {
   const validPositions = sum('valid_position_points')
   const invalidPositions = sum('invalid_position_points')
   const baseDamage = Math.max(1, sum('base_damage'))
+  const outpostAttacks = matches.filter(match => match.first_outpost_damage_sec !== null && match.first_outpost_damage_sec !== undefined && Number.isFinite(Number(match.first_outpost_damage_sec)))
+  const outpostTimeline = outpostAttacks.map(match => ({
+    gameId: match.game_id,
+    opponent: match.opponent,
+    side: match.side,
+    won: Boolean(match.won),
+    firstDamageSec: Number(match.first_outpost_damage_sec),
+    damage: rounded(finite(match.outpost_damage), 0),
+    destroySec: match.outpost_destroy_sec === null || match.outpost_destroy_sec === undefined ? null : Number(match.outpost_destroy_sec),
+  })).sort((a, b) => a.firstDamageSec - b.firstDamageSec)
   return {
     mobility: {
       distanceM: rounded(average(matches.map(match => match.distance_m))),
@@ -87,6 +97,12 @@ export function summarizeDimensions(team) {
     },
     objective: {
       firstOutpostSec: rounded(median(matches.map(match => match.first_outpost_damage_sec))),
+      earliestOutpostSec: outpostTimeline.length ? rounded(outpostTimeline[0].firstDamageSec) : null,
+      outpostAttackGames: outpostAttacks.length,
+      outpostAttackPct: rounded(outpostAttacks.length * 100 / games),
+      outpostWithin90Pct: rounded(outpostAttacks.filter(match => Number(match.first_outpost_damage_sec) <= 90).length * 100 / games),
+      outpostWithin180Pct: rounded(outpostAttacks.filter(match => Number(match.first_outpost_damage_sec) <= 180).length * 100 / games),
+      outpostTimeline,
       firstBaseSec: rounded(median(matches.map(match => match.first_base_damage_sec))),
       outpostDestroyPct: rounded(matches.filter(match => match.outpost_destroy_sec !== null && match.outpost_destroy_sec !== undefined && Number.isFinite(Number(match.outpost_destroy_sec))).length * 100 / games),
       buffsPerGame: rounded(sum('buffs') / games),
@@ -120,6 +136,12 @@ export function strengthGrade(score) {
   if (value >= 50) return 'C'
   if (value >= 40) return 'D'
   return 'E'
+}
+
+export function rankTeamsByStrength(teams) {
+  return [...(teams || [])]
+    .sort((first, second) => teamStrength(second) - teamStrength(first) || first.team.localeCompare(second.team, 'zh-CN'))
+    .map((team, index) => ({ ...team, strengthRank: index + 1, strengthValue: rounded(teamStrength(team)) }))
 }
 
 export function matchupEstimate(primary, opponent, headToHead = []) {
