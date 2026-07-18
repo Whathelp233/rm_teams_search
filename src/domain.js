@@ -32,10 +32,6 @@ export function densityOpacity(samples, maximum) {
   return Math.max(.025, Math.min(.88, normalized * normalized * .88))
 }
 
-export function reliabilityTone(grade) {
-  return ['A', 'B'].includes(grade) ? 'good' : grade === 'C' ? 'warn' : 'bad'
-}
-
 const tacticalWeights = {
   firepower: .22,
   objective: .18,
@@ -50,18 +46,11 @@ function finite(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback
 }
 
-export function reliabilityScore(team) {
-  const reliability = team?.reliability || {}
-  return .25 * finite(reliability.start_complete_pct) +
-    .5 * finite(reliability.availability_pct) +
-    .25 * (100 - finite(reliability.disconnect_game_pct, 100))
-}
-
 export function teamStrength(team) {
   const tactical = Object.entries(tacticalWeights).reduce(
     (total, [key, weight]) => total + finite(team?.scores?.[key]) * weight, 0,
   )
-  return .55 * tactical + .25 * finite(team?.summary?.win_rate) + .2 * reliabilityScore(team)
+  return .7 * tactical + .3 * finite(team?.summary?.win_rate)
 }
 
 export function matchupEstimate(primary, opponent, headToHead = []) {

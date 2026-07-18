@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, reliabilityScore, reliabilityTone, teamPerspectivePoint, teamStrength } from '../src/domain.js'
+import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, teamPerspectivePoint, teamStrength } from '../src/domain.js'
 
 test('red side remains in official coordinates', () => {
   assert.deepEqual(canonicalPoint(3, 4, '红'), [3, 4])
@@ -8,12 +8,6 @@ test('red side remains in official coordinates', () => {
 
 test('blue side is centrally mirrored for own-side view', () => {
   assert.deepEqual(canonicalPoint(25, 11, '蓝'), [3, 4])
-})
-
-test('reliability grades have stable visual groups', () => {
-  assert.equal(reliabilityTone('A'), 'good')
-  assert.equal(reliabilityTone('C'), 'warn')
-  assert.equal(reliabilityTone('E'), 'bad')
 })
 
 test('official positive Y is vertically flipped onto the field image', () => {
@@ -46,17 +40,14 @@ const strongTeam = {
   team: '强队',
   summary: { games: 20, win_rate: 80 },
   scores: { firepower: 85, objective: 80, spatial: 75, defense: 82, resource: 70, adaptability: 78 },
-  reliability: { start_complete_pct: 99, availability_pct: 99, disconnect_game_pct: 3 },
 }
 const weakerTeam = {
   team: '弱队',
   summary: { games: 20, win_rate: 35 },
   scores: { firepower: 40, objective: 45, spatial: 50, defense: 42, resource: 55, adaptability: 48 },
-  reliability: { start_complete_pct: 92, availability_pct: 94, disconnect_game_pct: 15 },
 }
 
-test('team comparison uses tactical, result, and granular reliability inputs', () => {
-  assert.ok(reliabilityScore(strongTeam) > reliabilityScore(weakerTeam))
+test('team comparison uses tactical and historical result inputs', () => {
   assert.ok(teamStrength(strongTeam) > teamStrength(weakerTeam))
 })
 
