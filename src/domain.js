@@ -33,11 +33,11 @@ export function densityOpacity(samples, maximum) {
 }
 
 const tacticalWeights = {
-  firepower: .22,
+  firepower: .20,
   objective: .18,
-  spatial: .15,
-  defense: .18,
-  resource: .12,
+  spatial: .14,
+  defense: .20,
+  resource: .13,
   adaptability: .15,
 }
 
@@ -128,6 +128,9 @@ export function summarizeDimensions(team) {
       baseDartPct: rounded(sum('base_damage_dart') * 100 / baseDamage),
     },
     radar: team?.radar_analysis || null,
+    defense: team?.defense_analysis || null,
+    strength: team?.strength_analysis || null,
+    consistency: team?.consistency_analysis || null,
   }
 }
 
@@ -135,7 +138,8 @@ export function teamStrength(team) {
   const tactical = Object.entries(tacticalWeights).reduce(
     (total, [key, weight]) => total + finite(team?.scores?.[key]) * weight, 0,
   )
-  return .7 * tactical + .3 * finite(team?.summary?.win_rate ?? team?.win_rate)
+  const result = finite(team?.strength_analysis?.result_score, finite(team?.summary?.win_rate ?? team?.win_rate))
+  return .75 * tactical + .25 * result
 }
 
 export function strengthGrade(score) {
