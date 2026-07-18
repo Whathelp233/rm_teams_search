@@ -128,6 +128,7 @@ export function summarizeDimensions(team) {
       baseDartPct: rounded(sum('base_damage_dart') * 100 / baseDamage),
     },
     radar: team?.radar_analysis || null,
+    spatial: team?.spatial_analysis || null,
     defense: team?.defense_analysis || null,
     strength: team?.strength_analysis || null,
     consistency: team?.consistency_analysis || null,
