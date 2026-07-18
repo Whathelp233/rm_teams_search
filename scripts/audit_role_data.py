@@ -14,8 +14,8 @@ EXPECTED = ["英雄", "工程", "步兵3", "步兵4", "哨兵", "空中", "飞�
 def main():
     failures = []
     catalog = json.loads((DATA / "roles" / "index.json").read_text(encoding="utf-8"))
-    if catalog.get("schema_version") != "role-data-1.0.0":
-        failures.append("role catalog schema is not role-data-1.0.0")
+    if catalog.get("schema_version") != "role-data-1.1.0":
+        failures.append("role catalog schema is not role-data-1.1.0")
     if [item["role"] for item in catalog.get("roles", [])] != EXPECTED:
         failures.append("role catalog does not contain the seven ordered roles")
     if catalog.get("total_second_rows") != 2_990_075:
@@ -39,6 +39,9 @@ def main():
             availability = team["summary"].get("availability_pct")
             if availability is not None and not 0 <= availability <= 100:
                 failures.append(f"{role['role']} availability out of range for {team['team']}")
+            confidence = team["summary"].get("estimated_damage_confidence_pct")
+            if confidence is not None and not 0 <= confidence <= 100:
+                failures.append(f"{role['role']} damage attribution confidence out of range for {team['team']}")
         for download in role["downloads"].values():
             file_path = ROOT / "public" / download
             if not file_path.exists() or file_path.stat().st_size == 0:
