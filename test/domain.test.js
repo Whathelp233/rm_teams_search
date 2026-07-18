@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, strengthGrade, teamPerspectivePoint, teamStrength } from '../src/domain.js'
+import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from '../src/domain.js'
 
 test('red side remains in official coordinates', () => {
   assert.deepEqual(canonicalPoint(3, 4, '红'), [3, 4])
@@ -59,6 +59,19 @@ test('strength grade uses the same composite strength as comparison', () => {
   assert.equal(strengthGrade(40), 'D')
   assert.equal(strengthGrade(39.9), 'E')
   assert.equal(teamStrength({ ...strongTeam, summary: undefined, win_rate: 80 }), teamStrength(strongTeam))
+})
+
+test('high-dimensional summary keeps match-level timing, resource, and source detail', () => {
+  const summary = summarizeDimensions({ matches: [
+    { distance_m: 600, mean_pair_distance_m: 8, mean_attack_depth_m: 9, deep_pressure_seconds: 100, valid_position_points: 90, invalid_position_points: 10, total_coins_final: 1000, remaining_coins_final: 200, mean_power: 70, high_heat_seconds: 20, first_outpost_damage_sec: 80, first_base_damage_sec: 300, outpost_destroy_sec: 200, buffs: 4, rune_events: 1, assembly_events: 2, shots_17: 500, shots_42: 10, base_damage: 1000, base_damage_17: 500, base_damage_42: 300, base_damage_dart: 200 },
+    { distance_m: 800, mean_pair_distance_m: 10, mean_attack_depth_m: 11, deep_pressure_seconds: 200, valid_position_points: 80, invalid_position_points: 20, total_coins_final: 1200, remaining_coins_final: 300, mean_power: 90, high_heat_seconds: 40, first_outpost_damage_sec: 120, first_base_damage_sec: null, outpost_destroy_sec: null, buffs: 2, rune_events: 0, assembly_events: 0, shots_17: 700, shots_42: 20, base_damage: 500, base_damage_17: 250, base_damage_42: 0, base_damage_dart: 250 },
+  ] })
+  assert.equal(summary.mobility.distanceM, 700)
+  assert.equal(summary.mobility.positionCoveragePct, 85)
+  assert.equal(summary.resource.spendPct, 77.3)
+  assert.equal(summary.objective.firstOutpostSec, 100)
+  assert.equal(summary.objective.outpostDestroyPct, 50)
+  assert.equal(summary.firepower.baseDartPct, 30)
 })
 
 test('matchup estimate is complementary and reports sample confidence', () => {
