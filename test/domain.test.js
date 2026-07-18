@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from '../src/domain.js'
+import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, rankTeamsByStrength, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from '../src/domain.js'
 
 test('red side remains in official coordinates', () => {
   assert.deepEqual(canonicalPoint(3, 4, '红'), [3, 4])
@@ -61,6 +61,13 @@ test('strength grade uses the same composite strength as comparison', () => {
   assert.equal(teamStrength({ ...strongTeam, summary: undefined, win_rate: 80 }), teamStrength(strongTeam))
 })
 
+test('team list ranking is descending by composite strength', () => {
+  const ranked = rankTeamsByStrength([weakerTeam, strongTeam])
+  assert.deepEqual(ranked.map(team => team.team), ['强队', '弱队'])
+  assert.deepEqual(ranked.map(team => team.strengthRank), [1, 2])
+  assert.ok(ranked[0].strengthValue > ranked[1].strengthValue)
+})
+
 test('high-dimensional summary keeps match-level timing, resource, and source detail', () => {
   const summary = summarizeDimensions({ matches: [
     { distance_m: 600, mean_pair_distance_m: 8, mean_attack_depth_m: 9, deep_pressure_seconds: 100, valid_position_points: 90, invalid_position_points: 10, total_coins_final: 1000, remaining_coins_final: 200, mean_power: 70, high_heat_seconds: 20, first_outpost_damage_sec: 80, first_base_damage_sec: 300, outpost_destroy_sec: 200, buffs: 4, rune_events: 1, assembly_events: 2, shots_17: 500, shots_42: 10, base_damage: 1000, base_damage_17: 500, base_damage_42: 300, base_damage_dart: 200 },
@@ -70,6 +77,12 @@ test('high-dimensional summary keeps match-level timing, resource, and source de
   assert.equal(summary.mobility.positionCoveragePct, 85)
   assert.equal(summary.resource.spendPct, 77.3)
   assert.equal(summary.objective.firstOutpostSec, 100)
+  assert.equal(summary.objective.earliestOutpostSec, 80)
+  assert.equal(summary.objective.outpostAttackGames, 2)
+  assert.equal(summary.objective.outpostAttackPct, 100)
+  assert.equal(summary.objective.outpostWithin90Pct, 50)
+  assert.equal(summary.objective.outpostWithin180Pct, 100)
+  assert.equal(summary.objective.outpostTimeline[0].firstDamageSec, 80)
   assert.equal(summary.objective.outpostDestroyPct, 50)
   assert.equal(summary.firepower.baseDartPct, 30)
 })
