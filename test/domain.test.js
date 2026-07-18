@@ -58,12 +58,12 @@ test('composite strength gives defense a 15 percent effective weight', () => {
 })
 
 test('strength grade uses the same composite strength as comparison', () => {
-  assert.equal(strengthGrade(80), 'S')
-  assert.equal(strengthGrade(70), 'A')
-  assert.equal(strengthGrade(60), 'B')
-  assert.equal(strengthGrade(50), 'C')
-  assert.equal(strengthGrade(40), 'D')
-  assert.equal(strengthGrade(39.9), 'E')
+  assert.equal(strengthGrade(75), 'S')
+  assert.equal(strengthGrade(65), 'A')
+  assert.equal(strengthGrade(55), 'B')
+  assert.equal(strengthGrade(45), 'C')
+  assert.equal(strengthGrade(35), 'D')
+  assert.equal(strengthGrade(34.9), 'E')
   assert.equal(teamStrength({ ...strongTeam, summary: undefined, win_rate: 80 }), teamStrength(strongTeam))
 })
 
@@ -75,7 +75,7 @@ test('team list ranking is descending by composite strength', () => {
 })
 
 test('high-dimensional summary keeps match-level timing, resource, and source detail', () => {
-  const spatialAnalysis = { version: '2.2.0', score: 75.3, components: { mobility_intensity: 62, attack_depth: 74.5, deep_pressure: 82.8 } }
+  const spatialAnalysis = { version: '3.0.0', score: 71.5, components: { relative_territory: 72.8, forward_presence: 76, neutral_control: 68.8 } }
   const summary = summarizeDimensions({ spatial_analysis: spatialAnalysis, matches: [
     { distance_m: 600, mean_pair_distance_m: 8, mean_attack_depth_m: 9, deep_pressure_seconds: 100, valid_position_points: 90, invalid_position_points: 10, total_coins_final: 1000, remaining_coins_final: 200, mean_power: 70, high_heat_seconds: 20, first_outpost_damage_sec: 80, first_base_damage_sec: 300, outpost_destroy_sec: 200, buffs: 4, rune_events: 1, assembly_events: 2, shots_17: 500, shots_42: 10, base_damage: 1000, base_damage_17: 500, base_damage_42: 300, base_damage_dart: 200 },
     { distance_m: 800, mean_pair_distance_m: 10, mean_attack_depth_m: 11, deep_pressure_seconds: 200, valid_position_points: 80, invalid_position_points: 20, total_coins_final: 1200, remaining_coins_final: 300, mean_power: 90, high_heat_seconds: 40, first_outpost_damage_sec: 120, first_base_damage_sec: null, outpost_destroy_sec: null, buffs: 2, rune_events: 0, assembly_events: 0, shots_17: 700, shots_42: 20, base_damage: 500, base_damage_17: 250, base_damage_42: 0, base_damage_dart: 250 },

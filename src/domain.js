@@ -33,11 +33,11 @@ export function densityOpacity(samples, maximum) {
 }
 
 const tacticalWeights = {
-  firepower: .20,
-  objective: .18,
-  spatial: .14,
+  firepower: .18,
+  objective: .20,
+  spatial: .17,
   defense: .20,
-  resource: .13,
+  resource: .10,
   adaptability: .15,
 }
 
@@ -128,10 +128,19 @@ export function summarizeDimensions(team) {
       baseDartPct: rounded(sum('base_damage_dart') * 100 / baseDamage),
     },
     radar: team?.radar_analysis || null,
+    analysis: {
+      firepower: team?.firepower_analysis || null,
+      objective: team?.objective_analysis || null,
+      spatial: team?.spatial_analysis || null,
+      defense: team?.defense_analysis || null,
+      resource: team?.resource_analysis || null,
+      adaptability: team?.adaptability_analysis || null,
+    },
     spatial: team?.spatial_analysis || null,
     defense: team?.defense_analysis || null,
     strength: team?.strength_analysis || null,
     consistency: team?.consistency_analysis || null,
+    confidence: team?.score_confidence || null,
   }
 }
 
@@ -145,11 +154,11 @@ export function teamStrength(team) {
 
 export function strengthGrade(score) {
   const value = finite(score)
-  if (value >= 80) return 'S'
-  if (value >= 70) return 'A'
-  if (value >= 60) return 'B'
-  if (value >= 50) return 'C'
-  if (value >= 40) return 'D'
+  if (value >= 75) return 'S'
+  if (value >= 65) return 'A'
+  if (value >= 55) return 'B'
+  if (value >= 45) return 'C'
+  if (value >= 35) return 'D'
   return 'E'
 }
 
