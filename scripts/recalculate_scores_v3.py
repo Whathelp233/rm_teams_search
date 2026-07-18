@@ -20,20 +20,20 @@ from pathlib import Path
 MOBILE_TYPES = {"英雄", "工程", "步兵3", "步兵4", "哨兵", "空中"}
 COMBAT_CATEGORIES = {"17mm", "42mm", "飞镖"}
 DIMENSION_WEIGHTS = {
-    "firepower": 0.18,
-    "objective": 0.32,
-    "spatial": 0.14,
-    "defense": 0.14,
-    "resource": 0.17,
-    "adaptability": 0.05,
+    "firepower": 0.15,
+    "objective": 0.50,
+    "spatial": 0.11,
+    "defense": 0.09,
+    "resource": 0.14,
+    "adaptability": 0.01,
 }
 COMPONENT_WEIGHTS = {
-    "firepower": {"clean_output": 0.30, "accuracy": 0.25, "kill_conversion": 0.25, "pressure_uptime": 0.20},
-    "objective": {"outpost_pressure": 0.15, "outpost_conversion": 0.25, "base_pressure": 0.15, "base_conversion": 0.25, "strategic_tools": 0.20},
-    "spatial": {"relative_territory": 0.30, "forward_presence": 0.25, "neutral_control": 0.20, "field_coverage": 0.25},
-    "defense": {"trade_resilience": 0.25, "mobile_resilience": 0.20, "outpost_denial": 0.20, "base_denial": 0.25, "collapse_resistance": 0.10},
-    "resource": {"acquisition": 0.25, "utilization": 0.20, "combat_conversion": 0.20, "objective_conversion": 0.15, "thermal_efficiency": 0.20},
-    "adaptability": {"side_transfer": 0.25, "opponent_robustness": 0.20, "strong_opponent_residual": 0.25, "setback_adjustment": 0.20, "rematch_adjustment": 0.10},
+    "firepower": {"clean_output": 0.35, "accuracy": 0.15, "kill_conversion": 0.25, "pressure_uptime": 0.25},
+    "objective": {"outpost_pressure": 0.10, "outpost_conversion": 0.25, "base_pressure": 0.15, "base_conversion": 0.35, "strategic_tools": 0.15},
+    "spatial": {"relative_territory": 0.25, "forward_presence": 0.30, "neutral_control": 0.35, "field_coverage": 0.10},
+    "defense": {"trade_resilience": 0.35, "mobile_resilience": 0.25, "outpost_denial": 0.15, "base_denial": 0.15, "collapse_resistance": 0.10},
+    "resource": {"acquisition": 0.40, "utilization": 0.05, "combat_conversion": 0.10, "objective_conversion": 0.25, "thermal_efficiency": 0.20},
+    "adaptability": {"side_transfer": 0.10, "opponent_robustness": 0.10, "strong_opponent_residual": 0.20, "setback_adjustment": 0.30, "rematch_adjustment": 0.30},
 }
 
 
@@ -358,6 +358,26 @@ def main():
     for row in connection.execute(query):
         hp[(row["game_id"], row["team"])] = dict(row)
 
+    final_hp = {}
+    final_query = f"""
+        SELECT game_id,team,
+          MAX(CASE WHEN robot='基地' THEN current_hp END) base_final_hp,
+          MAX(CASE WHEN robot='基地' THEN max_hp END) base_final_max_hp,
+          MAX(CASE WHEN robot='前哨站' THEN current_hp END) outpost_final_hp,
+          MAX(CASE WHEN robot='前哨站' THEN max_hp END) outpost_final_max_hp,
+          SUM(CASE WHEN robot IN ('英雄','工程','步兵3','步兵4','哨兵','空中') THEN current_hp ELSE 0 END) mobile_final_hp,
+          SUM(CASE WHEN robot IN ('英雄','工程','步兵3','步兵4','哨兵','空中') THEN max_hp ELSE 0 END) mobile_final_max_hp
+        FROM (
+          SELECT game_id,学校名 team,机器人类型 robot,当前血量 current_hp,最大血量 max_hp,
+            ROW_NUMBER() OVER (PARTITION BY game_id,学校名,机器人类型 ORDER BY 时刻秒 DESC) row_number
+          FROM timeseries
+        ) latest
+        WHERE row_number=1
+        GROUP BY game_id,team
+    """
+    for row in connection.execute(final_query):
+        final_hp[(row["game_id"], row["team"])] = dict(row)
+
     game_results = [row for row in connection.execute(
         "SELECT game_id,赛区 region,场次号 series_no,红方学校 red,蓝方学校 blue,胜方 winner,开始时间 started FROM matches ORDER BY 开始时间,game_id"
     ) if row["game_id"] in game_teams]
@@ -365,15 +385,22 @@ def main():
 
     clean_output_baseline = {}
     clean_allowed_baseline = {}
+    outpost_attack_baseline = {}
+    base_attack_baseline = {}
     for team, (_, payload) in payloads.items():
-        outputs, allowed = [], []
+        outputs, allowed, outpost_attacks, base_attacks = [], [], [], []
         for match in payload["matches"]:
             duration = max(1.0, float(match.get("duration_sec") or 0))
             outputs.append(damage[(match["game_id"], match["opponent"])]["robot"] * 420.0 / duration)
             allowed.append(damage[(match["game_id"], team)]["robot"] * 420.0 / duration)
+            outpost_attacks.append(damage[(match["game_id"], match["opponent"])]["outpost"] * 420.0 / duration)
+            base_attacks.append(damage[(match["game_id"], match["opponent"])]["base"] * 420.0 / duration)
         clean_output_baseline[team], clean_allowed_baseline[team] = mean(outputs), mean(allowed)
+        outpost_attack_baseline[team], base_attack_baseline[team] = mean(outpost_attacks), mean(base_attacks)
     global_output = statistics.median(clean_output_baseline.values())
     global_allowed = statistics.median(clean_allowed_baseline.values())
+    global_outpost_attack = statistics.median(outpost_attack_baseline.values())
+    global_base_attack = statistics.median(base_attack_baseline.values())
 
     fire_raw, objective_raw, spatial_raw, defense_raw, resource_raw = {}, {}, {}, {}, {}
     performance_by_match = {}
@@ -424,18 +451,47 @@ def main():
             normalized_taken = (own_in["robot"] * 420.0 / duration) / max(1.0, expected_attack)
             exchange_total = normalized_dealt + normalized_taken
             trade_resilience = 0.5 if exchange_total <= 0 else normalized_dealt / exchange_total
+            terminal = final_hp.get((game_id, team), {})
             mobile_hp, availability = own_space.get("mobile_hp"), own_space.get("availability")
-            mobile_resilience = None if mobile_hp is None or availability is None else 0.55 * mobile_hp + 0.45 * availability
+            terminal_mobile = (
+                None if not terminal.get("mobile_final_max_hp")
+                else float(terminal["mobile_final_hp"] or 0.0) / float(terminal["mobile_final_max_hp"])
+            )
+            mobile_resilience = (
+                None if mobile_hp is None or availability is None
+                else 0.45 * mobile_hp + 0.30 * availability + 0.25 * (terminal_mobile if terminal_mobile is not None else mobile_hp)
+            )
             outpost_first = first_attack.get((game_id, opponent, "outpost"))
             outpost_delay = 1.0 if outpost_first is None else min(1.0, outpost_first / duration)
             own_outpost_zero = outpost_zero.get((game_id, team))
             outpost_survival = 1.0 if own_outpost_zero is None else min(1.0, float(own_outpost_zero) / duration)
             outpost_hp = own_space.get("outpost_hp")
-            outpost_denial = None if outpost_hp is None else 0.50 * outpost_hp + 0.25 * outpost_delay + 0.25 * outpost_survival
+            outpost_final = (
+                None if not terminal.get("outpost_final_max_hp")
+                else float(terminal["outpost_final_hp"] or 0.0) / float(terminal["outpost_final_max_hp"])
+            )
+            outpost_survival = 1.0 if own_outpost_zero is None else min(1.0, max(0.0, float(own_outpost_zero) / duration))
+            expected_outpost_attack = 0.5 * global_outpost_attack + 0.5 * outpost_attack_baseline.get(opponent, global_outpost_attack)
+            outpost_suppression = 1.0 - min(1.0, own_in["outpost"] / max(250.0, expected_outpost_attack))
+            outpost_denial = (
+                None if outpost_hp is None
+                else 0.45 * outpost_survival + 0.20 * (outpost_final if outpost_final is not None else outpost_hp)
+                + 0.15 * outpost_delay + 0.20 * outpost_suppression
+            )
             base_first = first_attack.get((game_id, opponent, "base"))
             base_delay = 1.0 if base_first is None else min(1.0, base_first / duration)
             base_hp = own_space.get("base_hp")
-            base_denial = None if base_hp is None else 0.45 * base_hp + 0.25 * base_delay + 0.30 * (1.0 - min(1.0, own_in["base"] / 5000.0))
+            base_final = (
+                None if not terminal.get("base_final_max_hp")
+                else float(terminal["base_final_hp"] or 0.0) / 5000.0
+            )
+            expected_base_attack = 0.5 * global_base_attack + 0.5 * base_attack_baseline.get(opponent, global_base_attack)
+            base_suppression = 1.0 - min(1.0, own_in["base"] / max(250.0, expected_base_attack))
+            base_denial = (
+                None if base_hp is None
+                else 0.45 * (base_final if base_final is not None else base_hp) + 0.15 * base_delay
+                + 0.25 * base_suppression + 0.15 * outpost_survival
+            )
             collapse_layers = [
                 (trade_resilience, 0.25), (mobile_resilience, 0.20),
                 (outpost_denial, 0.25), (base_denial, 0.30),
@@ -604,8 +660,8 @@ def main():
     strength_scores = {team: 0.90 * tactical_scores[team] + 0.10 * result_scores[team] for team in teams}
     overall_ranks = {team: 1 + sum(strength_scores[other] > strength_scores[team] for other in teams) for team in teams}
 
-    index["schema_version"] = "3.8.0"
-    index["data_version"] = "score-3.8.0"
+    index["schema_version"] = "3.9.0"
+    index["data_version"] = "score-3.9.0"
     index["placement_method"] = {
         "format": "参赛手册规定的16进8、8进4、半决赛、季军争夺战和冠军争夺战，结合数据库实际胜负推导",
         "sources": [
@@ -614,7 +670,7 @@ def main():
             "RMUC 2026 北部赛区参赛手册 V2.0.0",
         ],
     }
-    index["scoring_notice"] = "六维3.8：新增剔除直接交手后的二阶对手分用于赛程解释；Bradley–Terry仍是唯一进入综合强度的赛程校正，避免重复加分"
+    index["scoring_notice"] = "六维3.9：按规则5.8胜负优先级设置权重先验，再以逐赛区、逐时间窗回测约束；基地/前哨、攻击伤害与剩余血量对应的直接胜负维度合计74%"
     for team, (path, payload) in payloads.items():
         scores = {name: analyses[name][team]["score"] for name in COMPONENT_WEIGHTS}
         tactical, result, strength = tactical_scores[team], result_scores[team], strength_scores[team]
@@ -622,7 +678,7 @@ def main():
         invalid_points = sum(float(match.get("invalid_position_points") or 0) for match in payload["matches"])
         position_coverage = position_points / max(1.0, position_points + invalid_points)
         confidence = 100.0 * games_by_team[team] / (games_by_team[team] + 8.0) * math.sqrt(position_coverage)
-        payload["schema_version"] = "3.8.0"; payload["data_version"] = "score-3.8.0"
+        payload["schema_version"] = "3.9.0"; payload["data_version"] = "score-3.9.0"
         payload.pop("consistency_analysis", None)
         payload["scores"] = scores
         payload["dimension_ranks"] = dimension_ranks[team]
@@ -632,10 +688,10 @@ def main():
         for name, score in scores.items():
             payload["summary"][f"{name}_score"] = score
             detail = analyses[name][team]
-            method = "absolute-anchor and percentile blend with typical/downside aggregation" if name == "defense" else "team fact percentile with games/(games+6) shrinkage"
+            method = "terminal base/outpost/mobile HP and clean damage exchange, blended with typical/downside aggregation" if name == "defense" else "team fact percentile with games/(games+6) shrinkage"
             if name == "adaptability":
                 method = "paired-condition transfer and residual response with component-specific evidence shrinkage"
-            detail.update({"version": "3.8.0", "method": method})
+            detail.update({"version": "3.9.0", "method": method})
             payload[f"{name}_analysis"] = detail
         payload["defense_analysis"]["excluded"] = excluded[team]
         payload["score_confidence"] = {
@@ -647,10 +703,16 @@ def main():
             "region_rank": opponent_region_ranks[team], "region_size": opponent_region_sizes[team],
         }
         payload["strength_analysis"] = {
-            "version": "3.8.0", "score": rounded(strength), "tactical_score": rounded(tactical),
+            "version": "3.9.0", "score": rounded(strength), "tactical_score": rounded(tactical),
             "result_score": rounded(result), "schedule_rating": rounded(ratings[team], 3),
             "tactical_weight": 0.90, "result_weight": 0.10,
             "tactical_dimension_weights": DIMENSION_WEIGHTS,
+            "victory_rule_alignment": {
+                "source": "RMUC 2026比赛规则手册V2.0.1 第5.8节",
+                "priority": ["基地终局血量", "前哨是否被毁及终局血量", "全队攻击伤害", "全队总剩余血量"],
+                "direct_dimension_weight": 0.74,
+                "enabling_dimension_weight": 0.26,
+            },
             "model": "regularized Bradley-Terry with red-side intercept",
             "red_side_intercept": rounded(side_bias, 3),
         }
@@ -664,7 +726,7 @@ def main():
         listing["placement"] = placements.get(team)
         compact_write(path, payload)
     compact_write(index_path, index)
-    print(f"recalculated {len(teams)} teams with score schema 3.8.0")
+    print(f"recalculated {len(teams)} teams with score schema 3.9.0")
 
 
 if __name__ == "__main__":

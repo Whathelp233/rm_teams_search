@@ -5,26 +5,37 @@ import { teamStrength } from '../src/domain.js'
 
 const readJson = path => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'))
 
-test('all published teams use complete score schema 3.8', () => {
+test('all published teams use complete score schema 3.9', () => {
   const index = readJson('../public/data/index.json')
-  assert.equal(index.schema_version, '3.8.0')
-  assert.equal(index.data_version, 'score-3.8.0')
+  assert.equal(index.schema_version, '3.9.0')
+  assert.equal(index.data_version, 'score-3.9.0')
   assert.equal(index.teams.length, 96)
   const dimensions = ['firepower', 'objective', 'spatial', 'defense', 'resource', 'adaptability']
-  const tacticalWeights = { firepower: .18, objective: .32, spatial: .14, defense: .14, resource: .17, adaptability: .05 }
+  const tacticalWeights = { firepower: .15, objective: .50, spatial: .11, defense: .09, resource: .14, adaptability: .01 }
+  const componentWeights = {
+    firepower: { clean_output: .35, accuracy: .15, kill_conversion: .25, pressure_uptime: .25 },
+    objective: { outpost_pressure: .10, outpost_conversion: .25, base_pressure: .15, base_conversion: .35, strategic_tools: .15 },
+    spatial: { relative_territory: .25, forward_presence: .30, neutral_control: .35, field_coverage: .10 },
+    defense: { trade_resilience: .35, mobile_resilience: .25, outpost_denial: .15, base_denial: .15, collapse_resistance: .10 },
+    resource: { acquisition: .40, utilization: .05, combat_conversion: .10, objective_conversion: .25, thermal_efficiency: .20 },
+    adaptability: { side_transfer: .10, opponent_robustness: .10, strong_opponent_residual: .20, setback_adjustment: .30, rematch_adjustment: .30 },
+  }
   const placementCounts = {}
   for (const listing of index.teams) {
     const team = readJson(`../public/data/teams/${listing.slug}.json`)
-    assert.equal(team.schema_version, '3.8.0', listing.team)
-    assert.equal(team.data_version, 'score-3.8.0', listing.team)
+    assert.equal(team.schema_version, '3.9.0', listing.team)
+    assert.equal(team.data_version, 'score-3.9.0', listing.team)
     assert.equal('consistency_analysis' in team, false, listing.team)
     assert.equal(team.overall_rank, listing.overall_rank, listing.team)
     assert.deepEqual(team.strength_analysis.tactical_dimension_weights, tacticalWeights, listing.team)
+    assert.equal(team.strength_analysis.victory_rule_alignment.direct_dimension_weight, .74, listing.team)
+    assert.equal(team.strength_analysis.victory_rule_alignment.enabling_dimension_weight, .26, listing.team)
     assert.ok(team.overall_rank >= 1 && team.overall_rank <= 96, listing.team)
     if (team.placement) placementCounts[team.placement.label] = (placementCounts[team.placement.label] || 0) + 1
     for (const dimension of dimensions) {
       const detail = team[`${dimension}_analysis`]
-      assert.equal(detail.version, '3.8.0', `${listing.team} ${dimension}`)
+      assert.equal(detail.version, '3.9.0', `${listing.team} ${dimension}`)
+      assert.deepEqual(detail.weights, componentWeights[dimension], `${listing.team} ${dimension} weights`)
       assert.ok(team.dimension_ranks[dimension] >= 1 && team.dimension_ranks[dimension] <= 96, `${listing.team} ${dimension} rank`)
       assert.equal(team.dimension_ranks[dimension], listing.dimension_ranks[dimension], `${listing.team} ${dimension} listing rank`)
       assert.equal(team.dimension_confidence[dimension], listing.dimension_confidence[dimension], `${listing.team} ${dimension} listing evidence`)
