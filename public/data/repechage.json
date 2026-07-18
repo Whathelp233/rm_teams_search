@@ -1,0 +1,25 @@
+{
+  "schema_version": "repechage-pickem-1.0.0",
+  "title": "RoboMaster 2026 全国总决赛复活赛",
+  "dates": "7月31日—8月2日",
+  "qualification_places": 4,
+  "source_note": "参赛名单来自用户提供的官方名单图片；名单排名不分先后。页面分组均为用户自定义或随机生成，不代表官方分组。",
+  "teams": [
+    {"team": "广东工业大学", "battle_name": "DynamicX"},
+    {"team": "桂林电子科技大学", "battle_name": "Evolution"},
+    {"team": "华中科技大学", "battle_name": "狼牙"},
+    {"team": "江南大学霞客湾校区", "battle_name": "SHARK"},
+    {"team": "南方科技大学", "battle_name": "ARTINX"},
+    {"team": "南华大学", "battle_name": "MA"},
+    {"team": "南京航空航天大学金城学院", "battle_name": "Born of Fire"},
+    {"team": "厦门大学嘉庚学院", "battle_name": "TCR"},
+    {"team": "山东理工大学", "battle_name": "齐奇"},
+    {"team": "深圳技术大学", "battle_name": "悍匠"},
+    {"team": "沈阳理工大学", "battle_name": "Ambition"},
+    {"team": "太原科技大学", "battle_name": "NewMaker"},
+    {"team": "西安电子科技大学", "battle_name": "IRobot"},
+    {"team": "应急管理大学", "battle_name": "风暴"},
+    {"team": "中国科学技术大学", "battle_name": "RoboWalker"},
+    {"team": "中国矿业大学", "battle_name": "CUBOT"}
+  ]
+}

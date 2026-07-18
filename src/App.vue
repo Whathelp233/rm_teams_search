@@ -4,17 +4,19 @@ import { init, use } from 'echarts/core'
 import { BarChart, RadarChart } from 'echarts/charts'
 import { GridComponent, RadarComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { aggregateHeatCells, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, roleMetrics, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from './domain.js'
+import { aggregateHeatCells, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, repechageGroupProjection, roleFrameSeries, roleMetrics, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from './domain.js'
 
 use([BarChart, RadarChart, GridComponent, RadarComponent, TooltipComponent, CanvasRenderer])
 const base = import.meta.env.BASE_URL
-const dataRevision = 'score-3.9.0-role-data-1.1.0'
+const dataRevision = 'score-3.9.0-role-data-1.1.0-pickem-1.0.0'
 const index = ref({ teams: [] }), selected = ref(null), query = ref(''), region = ref('全部'), error = ref('')
 const heat = ref(null), heatSide = ref('全部'), heatRobot = ref('全部'), heatView = ref('actual'), heatFrom = ref(0), heatTo = ref(420), heatMaskOpacity = ref(.34)
 const gameData = ref(null), activeGame = ref(null), time = ref(0), playing = ref(false), speed = ref(1), tail = ref(20), mapMode = ref('raster'), routeView = ref('actual')
 const visibleRobots = ref({}), compareSlug = ref(''), compareTeam = ref(null)
 const viewMode = ref('team'), roleCatalog = ref({ roles: [] }), selectedRoleSlug = ref('hero'), roleIndex = ref(null), roleTeam = ref(null)
 const roleRegion = ref('全部'), roleQuery = ref(''), roleMetric = ref('availability_pct'), activeRoleGameId = ref(null), roleTime = ref(0)
+const repechageConfig = ref(null), repechageTeams = ref([]), repechageGroups = ref([[], [], [], []]), repechagePicks = ref({}), repechageBusy = ref(false)
+const repechageLabels = ['A', 'B', 'C', 'D']
 let scoreChart, damageChart, timer
 const colors = ['#ff5268','#ff9e54','#ffd166','#9b7bff','#ef70cb','#ff355f','#48a8ff','#58d3ff','#41e1a6','#6f8dff','#61b8ff','#16c7e8']
 const rankedTeams = computed(() => rankTeamsByStrength(index.value.teams))
@@ -81,6 +83,12 @@ const roleTrailPoints = computed(() => activeRoleFrames.value.filter(frame => fr
   const actual = officialToMap(frame.x, frame.y)
   return rasterMapPoint(actual[0], actual[1], 'current').join(',')
 }).join(' '))
+const repechageTeamMap = computed(() => new Map(repechageTeams.value.map(team => [team.team, team])))
+const repechageBoards = computed(() => repechageGroups.value.map((names, index) => {
+  const members = names.map(name => repechageTeamMap.value.get(name)).filter(Boolean)
+  return { label: repechageLabels[index], members, projection: repechageGroupProjection(members) }
+}))
+const repechagePickCount = computed(() => Object.values(repechagePicks.value).filter(Boolean).length)
 const shownEvents = computed(() => (gameData.value?.events || []).filter(e => e.second <= time.value))
 const currentFrame = computed(() => {
   const frames = gameData.value?.frames || []; let found = []
@@ -136,6 +144,56 @@ function roleFramePoint(frame) {
   return rasterMapPoint(actual[0], actual[1], 'current')
 }
 function fetchData(path) { return fetch(`${base}${path}?v=${dataRevision}`, { cache: 'no-store' }) }
+function saveRepechage() {
+  localStorage.setItem('rmuc-repechage-pickem-1', JSON.stringify({ groups: repechageGroups.value, picks: repechagePicks.value }))
+}
+function randomizeRepechage() {
+  const names = repechageTeams.value.map(team => team.team)
+  for (let index = names.length - 1; index > 0; index -= 1) {
+    const target = Math.floor(Math.random() * (index + 1)); [names[index], names[target]] = [names[target], names[index]]
+  }
+  repechageGroups.value = repechageLabels.map((_, index) => names.slice(index * 4, index * 4 + 4))
+  repechagePicks.value = {}; saveRepechage()
+}
+function moveRepechageTeam(team, targetIndex) {
+  const target = Number(targetIndex)
+  const source = repechageGroups.value.findIndex(group => group.includes(team))
+  if (source < 0 || source === target) return
+  const groups = repechageGroups.value.map(group => [...group])
+  const displaced = groups[target][groups[target].length - 1]
+  groups[source] = groups[source].filter(name => name !== team)
+  groups[target] = groups[target].filter(name => name !== displaced)
+  groups[target].push(team); groups[source].push(displaced)
+  repechageGroups.value = groups
+  repechagePicks.value = { ...repechagePicks.value, [repechageLabels[source]]: null, [repechageLabels[target]]: null }
+  saveRepechage()
+}
+function pickRepechage(group, team) {
+  repechagePicks.value = { ...repechagePicks.value, [group]: repechagePicks.value[group] === team ? null : team }
+  saveRepechage()
+}
+async function loadRepechage() {
+  if (repechageConfig.value || repechageBusy.value) return
+  repechageBusy.value = true
+  try {
+    const response = await fetchData('data/repechage.json')
+    if (!response.ok) throw new Error('复活赛名单加载失败')
+    repechageConfig.value = await response.json()
+    const roster = repechageConfig.value.teams.map(item => ({ ...item, listing: index.value.teams.find(team => team.team === item.team) }))
+    if (roster.some(item => !item.listing)) throw new Error('复活赛名单与战术数据库无法完整对齐')
+    repechageTeams.value = await Promise.all(roster.map(async item => ({
+      ...await (await fetchData(`data/teams/${item.listing.slug}.json`)).json(), battle_name: item.battle_name,
+    })))
+    let restored = null
+    try { restored = JSON.parse(localStorage.getItem('rmuc-repechage-pickem-1') || 'null') } catch { restored = null }
+    const expected = new Set(repechageTeams.value.map(team => team.team))
+    const flat = restored?.groups?.flat?.() || []
+    if (restored?.groups?.length === 4 && restored.groups.every(group => group.length === 4) && flat.length === 16 && flat.every(name => expected.has(name)) && new Set(flat).size === 16) {
+      repechageGroups.value = restored.groups; repechagePicks.value = restored.picks || {}
+    } else randomizeRepechage()
+  } finally { repechageBusy.value = false }
+}
+function switchView(mode) { viewMode.value = mode; if (mode === 'repechage') loadRepechage() }
 async function loadTeam(teamSlug) {
   playing.value = false; gameData.value = null; activeGame.value = null
   const [teamRes, heatRes] = await Promise.all([fetchData(`data/teams/${teamSlug}.json`), fetchData(`data/heatmaps/${teamSlug}.json`)])
@@ -182,8 +240,27 @@ onBeforeUnmount(() => clearInterval(timer))
 
 <template>
 <div class="shell">
-  <aside><div class="brand"><span>RMUC 2026</span><strong>战术情报库 v3</strong></div><div class="view-tabs"><button :class="{active:viewMode==='team'}" @click="viewMode='team'">队伍分析</button><button :class="{active:viewMode==='role'}" @click="viewMode='role'">兵种分析</button></div><template v-if="viewMode==='team'"><input v-model="query" placeholder="搜索队伍"><select v-model="region"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in teams" :key="t.slug" :class="{active:selected?.team===t.team}" @click="loadTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.strengthRank}} · {{t.wins}}/{{t.games}} · {{t.region}}<template v-if="t.placement"> · {{t.placement.label}}</template> · 强度 {{strengthGrade(teamStrength(t))}}</small></button></div></template><template v-else><select :value="selectedRoleSlug" @change="loadRoleIndex($event.target.value)"><option v-for="role in roleCatalog.roles" :key="role.role_slug" :value="role.role_slug">{{role.role}}</option></select><select v-model="roleMetric"><option v-for="([key,definition]) in availableRoleMetrics" :key="key" :value="key">按{{definition.label}}排序</option></select><input v-model="roleQuery" placeholder="搜索队伍"><select v-model="roleRegion"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in roleTeams" :key="t.slug" :class="{active:roleTeam?.team===t.team}" @click="loadRoleTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.factRank}} · {{roleMetrics[roleMetric].label}} {{roleValue(t.factValue,roleMetrics[roleMetric].suffix)}} · {{t.region}}</small></button></div></template></aside>
-  <main v-if="viewMode==='role' && roleTeam && roleIndex" class="role-main">
+  <aside><div class="brand"><span>RMUC 2026</span><strong>战术情报库 v3</strong></div><div class="view-tabs"><button :class="{active:viewMode==='team'}" @click="switchView('team')">队伍</button><button :class="{active:viewMode==='role'}" @click="switchView('role')">兵种</button><button :class="{active:viewMode==='repechage'}" @click="switchView('repechage')">复活赛竞猜</button></div><template v-if="viewMode==='team'"><input v-model="query" placeholder="搜索队伍"><select v-model="region"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in teams" :key="t.slug" :class="{active:selected?.team===t.team}" @click="loadTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.strengthRank}} · {{t.wins}}/{{t.games}} · {{t.region}}<template v-if="t.placement"> · {{t.placement.label}}</template> · 强度 {{strengthGrade(teamStrength(t))}}</small></button></div></template><template v-else-if="viewMode==='role'"><select :value="selectedRoleSlug" @change="loadRoleIndex($event.target.value)"><option v-for="role in roleCatalog.roles" :key="role.role_slug" :value="role.role_slug">{{role.role}}</option></select><select v-model="roleMetric"><option v-for="([key,definition]) in availableRoleMetrics" :key="key" :value="key">按{{definition.label}}排序</option></select><input v-model="roleQuery" placeholder="搜索队伍"><select v-model="roleRegion"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in roleTeams" :key="t.slug" :class="{active:roleTeam?.team===t.team}" @click="loadRoleTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.factRank}} · {{roleMetrics[roleMetric].label}} {{roleValue(t.factValue,roleMetrics[roleMetric].suffix)}} · {{t.region}}</small></button></div></template><template v-else><div class="pick-sidebar"><b>我的晋级竞猜</b><span v-for="label in repechageLabels" :key="label">{{label}}组 · {{repechagePicks[label]||'未选择'}}</span><small>{{repechagePickCount}} / 4 已选择</small></div></template></aside>
+  <main v-if="viewMode==='repechage'" class="pickem-main">
+    <p v-if="repechageBusy && !repechageConfig">正在加载 16 支队伍与胜率模型…</p>
+    <template v-else-if="repechageConfig">
+      <div class="notice">{{repechageConfig.source_note}}</div>
+      <header><div><p>{{repechageConfig.dates}} · 4 个晋级名额</p><h1>复活赛分组竞猜</h1></div><button class="random-button" @click="randomizeRepechage">重新随机分组</button></header>
+      <section class="pick-summary"><div v-for="label in repechageLabels" :key="label"><span>{{label}}组竞猜</span><strong>{{repechagePicks[label]||'待选择'}}</strong></div></section>
+      <section class="pickem-grid">
+        <article v-for="(board,groupIndex) in repechageBoards" :key="board.label" class="panel pick-group">
+          <div class="section-head"><h2>{{board.label}} 组</h2><span>选 1 支晋级</span></div>
+          <div v-for="team in board.members" :key="team.team" :class="['pick-team',{picked:repechagePicks[board.label]===team.team}]">
+            <button class="pick-team-main" @click="pickRepechage(board.label,team.team)"><b>{{team.team}}</b><small>{{team.battle_name}} · 全局 #{{team.overall_rank}} · 强度 {{teamStrength(team).toFixed(1)}}</small><span>小组第一 <strong>{{board.projection.teams.find(item=>item.team===team.team)?.advancePct}}%</strong> · 期望胜场 {{board.projection.teams.find(item=>item.team===team.team)?.expectedWins}}</span></button>
+            <select :value="groupIndex" :aria-label="`${team.team}分组`" @change="moveRepechageTeam(team.team,$event.target.value)"><option v-for="(_,target) in repechageLabels" :key="target" :value="target">{{repechageLabels[target]}}组</option></select>
+          </div>
+          <details class="pairwise"><summary>查看 6 场两两胜率</summary><div v-for="match in board.projection.pairings" :key="`${match.first}-${match.second}`"><span>{{match.first}}</span><b>{{match.firstPct}}%</b><em>:</em><b>{{match.secondPct}}%</b><span>{{match.second}}</span></div></details>
+        </article>
+      </section>
+      <p class="method">概率模型沿用网站经滚动回测的综合强度胜率模型。竞猜计算暂按“四队单循环、胜场最高者晋级”；同胜场并列时等分概率。它是自定义竞猜沙盘，不代表官方赛制、官方分组或确定赛果。</p>
+    </template>
+  </main>
+  <main v-else-if="viewMode==='role' && roleTeam && roleIndex" class="role-main">
     <div class="notice">造成伤害是兵种级推定：42mm 按兵种唯一性归因，17mm 按同秒/前 1 秒发弹份额分配；不是射手身份或命中率。原始秒级数据完整保留。</div>
     <header><div><p>{{roleTeam.region}} · {{roleTeam.mode==='second'?'完整秒级状态':'完整事件记录'}}</p><h1>{{roleTeam.team}} · {{roleTeam.role}}</h1></div><div class="role-downloads"><a :href="`${base}${roleIndex.downloads.csv_gz}`">下载 CSV.gz</a><a :href="`${base}${roleIndex.downloads.json_gz}`">下载 JSON.gz</a></div></header>
     <template v-if="roleTeam.mode==='second'">

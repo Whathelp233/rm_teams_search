@@ -296,3 +296,53 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
     verdict,
   }
 }
+
+export function repechageGroupProjection(teams) {
+  const members = [...(teams || [])]
+  const pairings = []
+  for (let first = 0; first < members.length; first += 1) {
+    for (let second = first + 1; second < members.length; second += 1) {
+      const estimate = matchupEstimate(members[first], members[second])
+      pairings.push({ first, second, probability: estimate.primaryPct / 100, estimate })
+    }
+  }
+  const advancement = Array(members.length).fill(0)
+  const expectedWins = Array(members.length).fill(0)
+  const wins = Array(members.length).fill(0)
+  function enumerate(index, probability) {
+    if (index === pairings.length) {
+      const best = Math.max(...wins, 0)
+      const leaders = wins.map((value, team) => value === best ? team : -1).filter(team => team >= 0)
+      for (const leader of leaders) advancement[leader] += probability / leaders.length
+      return
+    }
+    const match = pairings[index]
+    wins[match.first] += 1
+    enumerate(index + 1, probability * match.probability)
+    wins[match.first] -= 1
+    wins[match.second] += 1
+    enumerate(index + 1, probability * (1 - match.probability))
+    wins[match.second] -= 1
+  }
+  enumerate(0, 1)
+  for (const match of pairings) {
+    expectedWins[match.first] += match.probability
+    expectedWins[match.second] += 1 - match.probability
+  }
+  return {
+    teams: members.map((team, index) => ({
+      team: team.team,
+      advancePct: Math.round(advancement[index] * 1000) / 10,
+      expectedWins: Math.round(expectedWins[index] * 100) / 100,
+      strength: Math.round(teamStrength(team) * 10) / 10,
+    })),
+    pairings: pairings.map(match => ({
+      first: members[match.first].team,
+      second: members[match.second].team,
+      firstPct: match.estimate.primaryPct,
+      secondPct: match.estimate.opponentPct,
+      confidence: match.estimate.confidence,
+    })),
+    model: '四队单循环、胜场最高晋级；同胜场并列时等分概率',
+  }
+}

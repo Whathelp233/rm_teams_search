@@ -146,3 +146,16 @@ test('role download manifest sizes and sha256 checksums match generated archives
     assert.equal(digest.digest('hex'), file.sha256, file.path)
   }
 })
+
+test('repechage pickem roster resolves all sixteen teams', () => {
+  const pickem = readJson('../public/data/repechage.json')
+  const index = readJson('../public/data/index.json')
+  assert.equal(pickem.schema_version, 'repechage-pickem-1.0.0')
+  assert.equal(pickem.qualification_places, 4)
+  assert.equal(pickem.teams.length, 16)
+  assert.equal(new Set(pickem.teams.map(team => team.team)).size, 16)
+  for (const team of pickem.teams) {
+    assert.ok(index.teams.some(listing => listing.team === team.team), team.team)
+    assert.ok(team.battle_name.length > 0, team.team)
+  }
+})

@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from '../src/domain.js'
+import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, repechageGroupProjection, roleFrameSeries, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from '../src/domain.js'
 
 test('red side remains in official coordinates', () => {
   assert.deepEqual(canonicalPoint(3, 4, '红'), [3, 4])
@@ -114,6 +114,15 @@ test('matchup estimate is complementary and reports sample confidence', () => {
   assert.ok(estimate.primaryPct > 70)
   assert.equal(estimate.confidence, '较高')
   assert.match(estimate.verdict, /强队/)
+})
+
+test('repechage group projection conserves one qualification place', () => {
+  const middleTeam = strength => ({ team: `队伍${strength}`, summary: { games: 15, win_rate: strength }, scores: { firepower: strength, objective: strength, spatial: strength, defense: strength, resource: strength, adaptability: strength } })
+  const projection = repechageGroupProjection([strongTeam, weakerTeam, middleTeam(60), middleTeam(50)])
+  assert.equal(projection.pairings.length, 6)
+  assert.ok(Math.abs(projection.teams.reduce((sum, team) => sum + team.advancePct, 0) - 100) <= .2)
+  assert.equal(projection.teams.toSorted((a, b) => b.advancePct - a.advancePct)[0].team, '强队')
+  for (const match of projection.pairings) assert.equal(match.firstPct + match.secondPct, 100)
 })
 
 test('head-to-head evidence is contextual and does not alter calibrated probability', () => {

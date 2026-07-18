@@ -72,3 +72,5 @@ VITE_BASE_PATH=/rm_teams_search/ npm run build
 `public/data/games` 保存 613 份双方共用时间轴，`public/data/heatmaps` 保存 96 份秒级热力数据，`public/maps` 保存规则手册实场图和官方坐标简图。原始比赛数据库和规则 PDF 不进入本仓库。
 
 `public/data/roles` 使用 `role-data-1.1.0`：每个兵种包含轻量汇总索引和按队伍拆分的完整秒级/事件级 JSON。`public/downloads/roles` 提供对应的完整 CSV.gz、JSON.gz 和 `manifest.json`。兵种稳定性汇总排除比赛前 10 秒与后 10 秒，但下载中的原始时间线不裁剪。源库受击事件没有射手身份；伤害按可审计的兵种级模型推定：42mm 根据弹种唯一性归给英雄，17mm 按命中同秒及前 1 秒的发弹份额分配，每条记录同时提供置信度、候选兵种和归因依据，不作为射手身份或命中率。运行 `python3 scripts/export_role_data.py` 可从工作区 SQLite 确定性重建全部文件。
+
+“复活赛竞猜”读取 `public/data/repechage.json` 的 16 队名单，支持四组随机分配、手动换组、本地保存晋级选择和组内两两胜率。小组第一概率采用四队单循环的 64 种赛果精确枚举；同胜场并列时等分晋级概率。该页面是自定义竞猜沙盘，不声称其分组或赛制为官方发布。
