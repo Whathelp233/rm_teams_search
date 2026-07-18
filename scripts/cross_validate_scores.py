@@ -139,10 +139,16 @@ def build_records():
             for game in eligible:
                 first, second = scored[game["primary"]], scored[game["opponent"]]
                 first_strength, second_strength = first["strength"], second["strength"]
+                direct_history = [
+                    match for match in payloads[game["primary"]][1]["matches"]
+                    if match["game_id"] in train_ids and match["opponent"] == game["opponent"]
+                ]
                 records.append({
                     "fold": fold_number, "region": game["region"], "won": game["won"],
                     "dimension_diff": {dimension: round(first["scores"][dimension] - second["scores"][dimension], 3) for dimension in DIMENSION_WEIGHTS},
                     "result_diff": round(first_strength["result_score"] - second_strength["result_score"], 3),
+                    "h2h_games": len(direct_history),
+                    "h2h_wins": sum(bool(match.get("won")) for match in direct_history),
                 })
     return records
 
@@ -153,11 +159,11 @@ def main():
         records = build_records()
         if args.write_fixture:
             FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-            FIXTURE.write_text(json.dumps({"schema_version": "3.5.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            FIXTURE.write_text(json.dumps({"schema_version": "3.6.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     else:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("schema_version") != "3.5.0":
-            raise SystemExit("rolling score fixture does not match score schema 3.5.0")
+        if fixture.get("schema_version") != "3.6.0":
+            raise SystemExit("rolling score fixture does not match score schema 3.6.0")
         records = fixture["records"]
 
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
@@ -180,7 +186,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "weight_candidates": {}, "dimension_ablation": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "head_to_head_adjustment": {}, "weight_candidates": {}, "dimension_ablation": {}, "blend_grid": {}}
     failures = []
     for region in REGIONS:
         report["regions"][region] = {model: metrics(rows[model][region]) for model in rows}
@@ -218,6 +224,34 @@ def main():
         threshold = 0.06 if region == "全部" else 0.10
         if calibration["ece"] >= threshold:
             failures.append(f"{region} confidence calibration ECE {calibration['ece']:.3f} >= {threshold:.2f}")
+    h2h_rows = {"release": defaultdict(list), "legacy_blend": defaultdict(list)}
+    h2h_history_rows = {"release": [], "legacy_blend": []}
+    for record in records:
+        dimension_diff, result_diff, region = record["dimension_diff"], record["result_diff"], record["region"]
+        difference = (1 - RELEASE_RESULT_WEIGHT) * sum(dimension_diff[key] * weight for key, weight in DIMENSION_WEIGHTS.items()) + RELEASE_RESULT_WEIGHT * result_diff
+        base_probability = probability(difference, 0.0, region)
+        games, wins = int(record.get("h2h_games", 0)), int(record.get("h2h_wins", 0))
+        smoothed_rate = (wins + 1) / (games + 2)
+        legacy_weight = min(0.30, games * 0.06)
+        legacy_probability = base_probability * (1 - legacy_weight) + smoothed_rate * legacy_weight
+        for name, predicted in (("release", base_probability), ("legacy_blend", legacy_probability)):
+            row = (predicted, record["won"])
+            h2h_rows[name][region].append(row)
+            if games:
+                h2h_history_rows[name].append(row)
+    for name in h2h_rows:
+        combined = [row for region in REGIONS for row in h2h_rows[name][region]]
+        report["head_to_head_adjustment"][name] = {
+            "overall": metrics(combined),
+            "with_history": metrics(h2h_history_rows[name]),
+            "regions": {region: metrics(h2h_rows[name][region]) for region in REGIONS},
+        }
+    h2h_release = report["head_to_head_adjustment"]["release"]
+    h2h_legacy = report["head_to_head_adjustment"]["legacy_blend"]
+    if h2h_release["overall"]["brier"] >= h2h_legacy["overall"]["brier"] - 0.0001:
+        failures.append("disabling direct-meeting probability blend does not improve chronological Brier")
+    if h2h_release["overall"]["accuracy"] < h2h_legacy["overall"]["accuracy"]:
+        failures.append("disabling direct-meeting probability blend reduces chronological accuracy")
     for name, candidate_weights in WEIGHT_CANDIDATES.items():
         candidate_rows = []
         regional_metrics = {}
