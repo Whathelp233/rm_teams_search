@@ -71,15 +71,22 @@ export function summarizeDimensions(team) {
   const invalidPositions = sum('invalid_position_points')
   const baseDamage = Math.max(1, sum('base_damage'))
   const outpostAttacks = matches.filter(match => match.first_outpost_damage_sec !== null && match.first_outpost_damage_sec !== undefined && Number.isFinite(Number(match.first_outpost_damage_sec)))
-  const outpostTimeline = outpostAttacks.map(match => ({
-    gameId: match.game_id,
-    opponent: match.opponent,
-    side: match.side,
-    won: Boolean(match.won),
-    firstDamageSec: Number(match.first_outpost_damage_sec),
-    damage: rounded(finite(match.outpost_damage), 0),
-    destroySec: match.outpost_destroy_sec === null || match.outpost_destroy_sec === undefined ? null : Number(match.outpost_destroy_sec),
-  })).sort((a, b) => a.firstDamageSec - b.firstDamageSec)
+  const outpostTimeline = outpostAttacks.map(match => {
+    const firstDamageSec = Number(match.first_outpost_damage_sec)
+    const rawDestroySec = match.outpost_destroy_sec === null || match.outpost_destroy_sec === undefined ? null : Number(match.outpost_destroy_sec)
+    const destroySec = Number.isFinite(rawDestroySec) && rawDestroySec >= firstDamageSec ? rawDestroySec : null
+    return {
+      gameId: match.game_id,
+      opponent: match.opponent,
+      side: match.side,
+      won: Boolean(match.won),
+      firstDamageSec,
+      damage: rounded(finite(match.outpost_damage), 0),
+      destroySec,
+      killDurationSec: destroySec === null ? null : rounded(destroySec - firstDamageSec),
+    }
+  }).sort((a, b) => a.firstDamageSec - b.firstDamageSec)
+  const outpostKills = outpostTimeline.filter(event => event.killDurationSec !== null)
   return {
     mobility: {
       distanceM: rounded(average(matches.map(match => match.distance_m))),
@@ -102,9 +109,12 @@ export function summarizeDimensions(team) {
       outpostAttackPct: rounded(outpostAttacks.length * 100 / games),
       outpostWithin90Pct: rounded(outpostAttacks.filter(match => Number(match.first_outpost_damage_sec) <= 90).length * 100 / games),
       outpostWithin180Pct: rounded(outpostAttacks.filter(match => Number(match.first_outpost_damage_sec) <= 180).length * 100 / games),
+      outpostKillGames: outpostKills.length,
+      fastestOutpostKillSec: outpostKills.length ? Math.min(...outpostKills.map(event => event.killDurationSec)) : null,
+      medianOutpostKillSec: rounded(median(outpostKills.map(event => event.killDurationSec))),
       outpostTimeline,
       firstBaseSec: rounded(median(matches.map(match => match.first_base_damage_sec))),
-      outpostDestroyPct: rounded(matches.filter(match => match.outpost_destroy_sec !== null && match.outpost_destroy_sec !== undefined && Number.isFinite(Number(match.outpost_destroy_sec))).length * 100 / games),
+      outpostDestroyPct: rounded(outpostKills.length * 100 / games),
       buffsPerGame: rounded(sum('buffs') / games),
       runePerGame: rounded(sum('rune_events') / games),
       assemblyPerGame: rounded(sum('assembly_events') / games),
