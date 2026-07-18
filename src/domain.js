@@ -46,6 +46,65 @@ function finite(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback
 }
 
+function average(values) {
+  const usable = values.filter(value => value !== null && value !== undefined && value !== '').map(value => Number(value)).filter(Number.isFinite)
+  return usable.length ? usable.reduce((total, value) => total + value, 0) / usable.length : null
+}
+
+function median(values) {
+  const usable = values.filter(value => value !== null && value !== undefined && value !== '').map(value => Number(value)).filter(Number.isFinite).sort((a, b) => a - b)
+  if (!usable.length) return null
+  const middle = Math.floor(usable.length / 2)
+  return usable.length % 2 ? usable[middle] : (usable[middle - 1] + usable[middle]) / 2
+}
+
+function rounded(value, digits = 1) {
+  return value === null ? null : Math.round(value * (10 ** digits)) / (10 ** digits)
+}
+
+export function summarizeDimensions(team) {
+  const matches = team?.matches || []
+  const games = Math.max(1, matches.length)
+  const sum = key => matches.reduce((total, match) => total + finite(match[key]), 0)
+  const totalCoins = sum('total_coins_final')
+  const validPositions = sum('valid_position_points')
+  const invalidPositions = sum('invalid_position_points')
+  const baseDamage = Math.max(1, sum('base_damage'))
+  return {
+    mobility: {
+      distanceM: rounded(average(matches.map(match => match.distance_m))),
+      pairDistanceM: rounded(average(matches.map(match => match.mean_pair_distance_m))),
+      attackDepthM: rounded(average(matches.map(match => match.mean_attack_depth_m))),
+      deepPressureSec: rounded(average(matches.map(match => match.deep_pressure_seconds))),
+      positionCoveragePct: rounded(validPositions * 100 / Math.max(1, validPositions + invalidPositions)),
+    },
+    resource: {
+      totalCoins: rounded(average(matches.map(match => match.total_coins_final))),
+      remainingCoins: rounded(average(matches.map(match => match.remaining_coins_final))),
+      spendPct: rounded((totalCoins - sum('remaining_coins_final')) * 100 / Math.max(1, totalCoins)),
+      meanPower: rounded(average(matches.map(match => match.mean_power))),
+      highHeatSec: rounded(average(matches.map(match => match.high_heat_seconds))),
+    },
+    objective: {
+      firstOutpostSec: rounded(median(matches.map(match => match.first_outpost_damage_sec))),
+      firstBaseSec: rounded(median(matches.map(match => match.first_base_damage_sec))),
+      outpostDestroyPct: rounded(matches.filter(match => match.outpost_destroy_sec !== null && match.outpost_destroy_sec !== undefined && Number.isFinite(Number(match.outpost_destroy_sec))).length * 100 / games),
+      buffsPerGame: rounded(sum('buffs') / games),
+      runePerGame: rounded(sum('rune_events') / games),
+      assemblyPerGame: rounded(sum('assembly_events') / games),
+    },
+    firepower: {
+      shots17PerGame: rounded(sum('shots_17') / games),
+      shots42PerGame: rounded(sum('shots_42') / games),
+      highHeatSec: rounded(average(matches.map(match => match.high_heat_seconds))),
+      base17Pct: rounded(sum('base_damage_17') * 100 / baseDamage),
+      base42Pct: rounded(sum('base_damage_42') * 100 / baseDamage),
+      baseDartPct: rounded(sum('base_damage_dart') * 100 / baseDamage),
+    },
+    radar: team?.radar_analysis || null,
+  }
+}
+
 export function teamStrength(team) {
   const tactical = Object.entries(tacticalWeights).reduce(
     (total, [key, weight]) => total + finite(team?.scores?.[key]) * weight, 0,
