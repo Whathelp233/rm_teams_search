@@ -61,9 +61,9 @@ export function densityOpacity(samples, maximum) {
 
 const tacticalWeights = {
   firepower: .18,
-  objective: .18,
-  spatial: .18,
-  defense: .18,
+  objective: .20,
+  spatial: .15,
+  defense: .19,
   resource: .13,
   adaptability: .15,
 }
@@ -198,9 +198,12 @@ export function rankTeamsByStrength(teams) {
 export function matchupEstimate(primary, opponent, headToHead = []) {
   const primaryStrength = teamStrength(primary)
   const opponentStrength = teamStrength(opponent)
-  // Scale 10 is the conservative end of the empirical 7.5–10 calibration
-  // range on 613 regional matches; intervals below still expose uncertainty.
-  let probability = 1 / (1 + Math.exp(-(primaryStrength - opponentStrength) / 10))
+  const primaryRegion = primary?.summary?.region || primary?.region
+  const opponentRegion = opponent?.summary?.region || opponent?.region
+  const regionalScale = primaryRegion === opponentRegion && ['南部赛区', '东部赛区'].includes(primaryRegion) ? 8 : 10
+  // South/East calibrate near 8 and North near 10 on the 613-match sample.
+  // Cross-region comparisons retain the more conservative scale 10.
+  let probability = 1 / (1 + Math.exp(-(primaryStrength - opponentStrength) / regionalScale))
   const h2hGames = headToHead.length
   const h2hWins = headToHead.filter(match => Boolean(match.won)).length
   if (h2hGames) {
