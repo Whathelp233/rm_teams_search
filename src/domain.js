@@ -205,18 +205,15 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
     : 20
   // Rolling-origin backtests favor wider uncertainty in South and North.
   // Cross-region comparisons have no direct sample and remain conservative.
-  let probability = 1 / (1 + Math.exp(-(primaryStrength - opponentStrength) / regionalScale))
+  const probability = 1 / (1 + Math.exp(-(primaryStrength - opponentStrength) / regionalScale))
   const h2hGames = headToHead.length
   const h2hWins = headToHead.filter(match => Boolean(match.won)).length
-  if (h2hGames) {
-    const smoothedRate = (h2hWins + 1) / (h2hGames + 2)
-    const weight = Math.min(.3, h2hGames * .06)
-    probability = probability * (1 - weight) + smoothedRate * weight
-  }
+  // Direct meetings are shown as context, but rolling-origin tests find that
+  // blending consecutive series games into the probability reduces accuracy.
   const primaryPct = Math.round(probability * 1000) / 10
   const opponentPct = Math.round((100 - primaryPct) * 10) / 10
   const minimumSample = Math.min(finite(primary?.summary?.games), finite(opponent?.summary?.games))
-  const confidence = h2hGames >= 5 && minimumSample >= 10 ? '较高' : minimumSample >= 10 ? '中' : '较低'
+  const confidence = minimumSample >= 15 ? '较高' : minimumSample >= 10 ? '中' : '较低'
   const margin = Math.max(8, 24 / Math.sqrt(Math.max(1, minimumSample)))
   let verdict = '接近五五开'
   if (primaryPct >= 65) verdict = `${primary.team}明显占优`

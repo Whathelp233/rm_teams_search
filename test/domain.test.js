@@ -112,13 +112,13 @@ test('matchup estimate is complementary and reports sample confidence', () => {
   const estimate = matchupEstimate(strongTeam, weakerTeam)
   assert.equal(estimate.primaryPct + estimate.opponentPct, 100)
   assert.ok(estimate.primaryPct > 70)
-  assert.equal(estimate.confidence, '中')
+  assert.equal(estimate.confidence, '较高')
   assert.match(estimate.verdict, /强队/)
 })
 
-test('head-to-head evidence adjusts but does not replace the model', () => {
+test('head-to-head evidence is contextual and does not alter calibrated probability', () => {
   const withoutHistory = matchupEstimate(strongTeam, weakerTeam)
   const upsetHistory = matchupEstimate(strongTeam, weakerTeam, [{ won: 0 }, { won: 0 }, { won: 0 }])
-  assert.ok(upsetHistory.primaryPct < withoutHistory.primaryPct)
+  assert.equal(upsetHistory.primaryPct, withoutHistory.primaryPct)
   assert.ok(upsetHistory.primaryPct > 50)
 })
