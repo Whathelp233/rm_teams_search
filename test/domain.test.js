@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, strengthGrade, summarizeDimensions, swissNextPairings, swissStandings, teamPerspectivePoint, teamStrength } from '../src/domain.js'
+import { aggregateHeatCells, canonicalPoint, densityOpacity, doubleEliminationNextPairings, doubleEliminationStandings, matchupEstimate, monteCarloTournament, officialToMap, predictedWinner, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, seriesWinProbability, simulateDoubleElimination, strengthGrade, summarizeDimensions, swissNextPairings, swissStandings, teamPerspectivePoint, teamStrength } from '../src/domain.js'
 
 test('red side remains in official coordinates', () => {
   assert.deepEqual(canonicalPoint(3, 4, '红'), [3, 4])
@@ -150,6 +150,43 @@ test('national Swiss simulator resolves eight qualifiers at three wins and eight
   assert.equal(standings.filter(team => team.status === '晋级').length, 8)
   assert.equal(standings.filter(team => team.status === '淘汰').length, 8)
   assert.ok(standings.every(team => Number.isInteger(team.opponentScore)))
+})
+
+test('probability simulation can produce an upset while favorite mode remains explicit', () => {
+  const match = { first: '热门', second: '冷门', firstPct: 80, secondPct: 20 }
+  assert.equal(predictedWinner(match, 'favorite', () => .99), '热门')
+  assert.equal(predictedWinner(match, 'random', () => .79), '热门')
+  assert.equal(predictedWinner(match, 'random', () => .81), '冷门')
+})
+
+test('BO3 and BO5 convert single-game probability into complementary series probability', () => {
+  assert.equal(seriesWinProbability(50, 3), 50)
+  assert.equal(seriesWinProbability(50, 5), 50)
+  assert.equal(seriesWinProbability(60, 3), 64.8)
+  assert.equal(seriesWinProbability(60, 5), 68.3)
+  assert.equal(seriesWinProbability(40, 5), 31.7)
+})
+
+test('double-elimination qualification requires two losses and halves the field', () => {
+  const team = index => ({ ...strongTeam, team: `双败队伍${index}`, scores: Object.fromEntries(Object.keys(strongTeam.scores).map(key => [key, 80 - index])) })
+  const teams = Array.from({ length: 8 }, (_, index) => team(index))
+  const result = simulateDoubleElimination(teams, 4, () => .25)
+  assert.equal(result.rounds.length, 3)
+  assert.equal(result.qualifiers.length, 4)
+  assert.equal(result.standings.filter(team => team.status === '淘汰').length, 4)
+  assert.ok(result.standings.filter(team => team.status === '淘汰').every(team => team.losses === 2))
+  assert.equal(doubleEliminationNextPairings(teams, result.rounds, 4).length, 0)
+  assert.equal(doubleEliminationStandings(teams, result.rounds, 4).filter(team => team.status === '晋级').length, 4)
+})
+
+test('Monte Carlo tournament reports bounded non-deterministic advancement probabilities', () => {
+  const team = index => ({ ...strongTeam, team: `模拟队伍${index}`, scores: Object.fromEntries(Object.keys(strongTeam.scores).map(key => [key, 75 - index])) })
+  const groups = [Array.from({ length: 8 }, (_, index) => team(index)), Array.from({ length: 8 }, (_, index) => team(index + 8))]
+  const result = monteCarloTournament(groups, { swiss_rounds: 3, win_target: null, loss_target: 2 }, 'repechage', 200, 7)
+  assert.equal(result.length, 16)
+  assert.equal(result.reduce((total, team) => total + team.qualifyPct, 0), 400)
+  assert.ok(result.every(team => team.qualifyPct >= 0 && team.qualifyPct <= 100))
+  assert.ok(result.some(team => team.qualifyPct > 0 && team.qualifyPct < 100))
 })
 
 test('head-to-head evidence is contextual and does not alter calibrated probability', () => {

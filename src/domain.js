@@ -355,7 +355,144 @@ export function swissNextPairings(teams, rounds = [], winTarget = null, lossTarg
   return pairs
 }
 
-function makeSwissPair(first, second) {
+export function seriesWinProbability(singleGamePct, bestOf = 3) {
+  const probability = Math.max(0, Math.min(1, Number(singleGamePct) / 100))
+  const winsNeeded = Math.floor(bestOf / 2) + 1
+  let total = 0
+  const combination = (n, k) => {
+    let result = 1
+    for (let index = 1; index <= k; index += 1) result = result * (n - index + 1) / index
+    return result
+  }
+  for (let wins = winsNeeded; wins <= bestOf; wins += 1) total += combination(bestOf, wins) * probability ** wins * (1 - probability) ** (bestOf - wins)
+  return Math.round(total * 1000) / 10
+}
+
+function makeSeriesPair(first, second, bestOf = 3) {
   const estimate = matchupEstimate(first, second)
-  return { first: first.team, second: second.team, firstPct: estimate.primaryPct, secondPct: estimate.opponentPct, confidence: estimate.confidence, winner: null }
+  const firstPct = seriesWinProbability(estimate.primaryPct, bestOf)
+  return { first: first.team, second: second.team, firstPct, secondPct: Math.round((100 - firstPct) * 10) / 10, confidence: estimate.confidence, bestOf, winner: null }
+}
+
+function makeSwissPair(first, second) { return makeSeriesPair(first, second, 3) }
+
+export function predictedWinner(match, mode = 'random', rng = Math.random) {
+  if (!match?.first || !match?.second) return null
+  if (mode === 'favorite') return match.firstPct >= match.secondPct ? match.first : match.second
+  return rng() < Number(match.firstPct) / 100 ? match.first : match.second
+}
+
+export function doubleEliminationStandings(teams, rounds = [], target = Math.ceil((teams || []).length / 2)) {
+  const records = new Map((teams || []).map(team => [team.team, { team: team.team, wins: 0, losses: 0, opponents: [] }]))
+  for (const round of rounds || []) for (const match of round.matches || []) {
+    if (!match.winner || !records.has(match.first) || !records.has(match.second)) continue
+    const loser = match.winner === match.first ? match.second : match.first
+    records.get(match.winner).wins += 1
+    records.get(loser).losses += 1
+    records.get(match.first).opponents.push(match.second)
+    records.get(match.second).opponents.push(match.first)
+  }
+  const activeCount = [...records.values()].filter(record => record.losses < 2).length
+  return [...records.values()].map(record => ({
+    ...record,
+    status: record.losses >= 2 ? '淘汰' : activeCount <= target ? '晋级' : '比赛中',
+  })).sort((first, second) => first.losses - second.losses || second.wins - first.wins || first.team.localeCompare(second.team, 'zh-CN'))
+}
+
+export function doubleEliminationNextPairings(teams, rounds = [], target = Math.ceil((teams || []).length / 2)) {
+  const members = [...(teams || [])]
+  if ((rounds || []).some(round => round.matches?.some(match => !match.winner))) return []
+  const standings = doubleEliminationStandings(members, rounds, target)
+  const activeNames = new Set(standings.filter(record => record.status === '比赛中').map(record => record.team))
+  const active = members.filter(team => activeNames.has(team.team))
+  if (active.length <= target) return []
+  const recordMap = new Map(standings.map(record => [record.team, record]))
+  const history = new Set()
+  for (const round of rounds || []) for (const match of round.matches || []) history.add([match.first, match.second].sort().join('|'))
+  const pool = [...active].sort((first, second) => {
+    const a = recordMap.get(first.team), b = recordMap.get(second.team)
+    return a.losses - b.losses || b.wins - a.wins || teamStrength(second) - teamStrength(first)
+  })
+  const pairs = []
+  while (pool.length >= 2) {
+    const first = pool.shift(), firstRecord = recordMap.get(first.team)
+    let bestIndex = 0, bestScore = Infinity
+    for (let index = 0; index < pool.length; index += 1) {
+      const candidate = pool[index], candidateRecord = recordMap.get(candidate.team)
+      const score = Math.abs(firstRecord.losses - candidateRecord.losses) * 1000
+        + (history.has([first.team, candidate.team].sort().join('|')) ? 100 : 0)
+        + teamStrength(candidate)
+      if (score < bestScore) { bestScore = score; bestIndex = index }
+    }
+    pairs.push(makeSwissPair(first, pool.splice(bestIndex, 1)[0]))
+  }
+  return pairs
+}
+
+export function simulateSwissStage(teams, config, rng = Math.random) {
+  const rounds = []
+  for (let round = 0; round < config.swiss_rounds; round += 1) {
+    const matches = swissNextPairings(teams, rounds, config.win_target, config.loss_target, config.swiss_rounds)
+    for (const match of matches) match.winner = predictedWinner(match, 'random', rng)
+    rounds.push({ round: round + 1, matches })
+  }
+  return { rounds, standings: swissStandings(teams, rounds, config.win_target, config.loss_target, config.swiss_rounds) }
+}
+
+export function simulateDoubleElimination(teams, target, rng = Math.random) {
+  const rounds = []
+  for (let round = 1; round <= 12; round += 1) {
+    const matches = doubleEliminationNextPairings(teams, rounds, target)
+    if (!matches.length) break
+    for (const match of matches) match.winner = predictedWinner(match, 'random', rng)
+    rounds.push({ round, matches })
+  }
+  const standings = doubleEliminationStandings(teams, rounds, target)
+  return { rounds, standings, qualifiers: standings.filter(record => record.status === '晋级').map(record => record.team) }
+}
+
+function makeSeededRandom(seed = 2026) {
+  let state = seed >>> 0
+  return () => {
+    state = (1664525 * state + 1013904223) >>> 0
+    return state / 4294967296
+  }
+}
+
+export function monteCarloTournament(groups, config, mode = 'repechage', iterations = 1000, seed = 2026) {
+  const members = (groups || []).flat()
+  const byName = new Map(members.map(team => [team.team, team]))
+  const counts = new Map(members.map(team => [team.team, { swiss: 0, qualify: 0, top8: 0, top4: 0, champion: 0 }]))
+  const rng = makeSeededRandom(seed)
+  const add = (names, key) => names.forEach(name => { if (counts.has(name)) counts.get(name)[key] += 1 })
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const swissNames = []
+    for (const group of groups) {
+      const result = simulateSwissStage(group, config, rng)
+      swissNames.push(...result.standings.filter(record => record.status !== '淘汰').map(record => record.team))
+    }
+    add(swissNames, 'swiss')
+    const swissTeams = swissNames.map(name => byName.get(name)).filter(Boolean)
+    const firstDouble = simulateDoubleElimination(swissTeams, swissTeams.length / 2, rng)
+    add(firstDouble.qualifiers, 'qualify')
+    if (mode !== 'finals') continue
+    add(firstDouble.qualifiers, 'top8')
+    const top8Teams = firstDouble.qualifiers.map(name => byName.get(name)).filter(Boolean)
+    const secondDouble = simulateDoubleElimination(top8Teams, 4, rng)
+    add(secondDouble.qualifiers, 'top4')
+    const seeded = secondDouble.qualifiers.map(name => byName.get(name)).filter(Boolean).sort((a, b) => teamStrength(b) - teamStrength(a))
+    const semifinals = [makeSwissPair(seeded[0], seeded[3]), makeSwissPair(seeded[1], seeded[2])]
+    const finalists = semifinals.map(match => predictedWinner(match, 'random', rng))
+    const finalMatch = makeSeriesPair(byName.get(finalists[0]), byName.get(finalists[1]), 5)
+    add([predictedWinner(finalMatch, 'random', rng)], 'champion')
+  }
+  const pct = value => Math.round(value * 1000 / iterations) / 10
+  return [...counts.entries()].map(([team, result]) => ({
+    team,
+    swissPct: pct(result.swiss),
+    qualifyPct: pct(result.qualify),
+    top8Pct: pct(result.top8),
+    top4Pct: pct(result.top4),
+    championPct: pct(result.champion),
+  })).sort((first, second) => (mode === 'finals' ? second.championPct - first.championPct : second.qualifyPct - first.qualifyPct) || first.team.localeCompare(second.team, 'zh-CN'))
 }
