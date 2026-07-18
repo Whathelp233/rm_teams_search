@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from '../src/domain.js'
+import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from '../src/domain.js'
 
 test('red side remains in official coordinates', () => {
   assert.deepEqual(canonicalPoint(3, 4, '红'), [3, 4])
@@ -121,4 +121,27 @@ test('head-to-head evidence is contextual and does not alter calibrated probabil
   const upsetHistory = matchupEstimate(strongTeam, weakerTeam, [{ won: 0 }, { won: 0 }, { won: 0 }])
   assert.equal(upsetHistory.primaryPct, withoutHistory.primaryPct)
   assert.ok(upsetHistory.primaryPct > 50)
+})
+
+test('role facts rank nullable metrics without treating not-applicable as zero', () => {
+  const teams = [
+    { team: '乙', summary: { availability_pct: 80 } },
+    { team: '甲', summary: { availability_pct: 90 } },
+    { team: '工程无发弹', summary: { availability_pct: null } },
+  ]
+  const ranked = rankRoleTeams(teams, 'availability_pct')
+  assert.deepEqual(ranked.map(team => team.team), ['甲', '乙'])
+  assert.deepEqual(ranked.map(team => team.factRank), [1, 2])
+})
+
+test('role frame series reconstructs hp, heat, power, and valid position', () => {
+  const game = {
+    frame_columns: ['second', 'hp', 'max_hp', 'x', 'y', 'z', 'yaw', 'power', 'heat17', 'heat17_limit', 'heat42', 'heat42_limit'],
+    frames: [[12, 100, 200, 3, 4, 0, 0, 80, 90, 100, 0, 0]],
+  }
+  const [frame] = roleFrameSeries(game)
+  assert.equal(frame.hpRatio, .5)
+  assert.equal(frame.heatRatio, .9)
+  assert.equal(frame.power, 80)
+  assert.equal(frame.valid, true)
 })

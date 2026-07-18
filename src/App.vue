@@ -4,15 +4,17 @@ import { init, use } from 'echarts/core'
 import { BarChart, RadarChart } from 'echarts/charts'
 import { GridComponent, RadarComponent, TooltipComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-import { aggregateHeatCells, densityOpacity, matchupEstimate, officialToMap, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from './domain.js'
+import { aggregateHeatCells, densityOpacity, matchupEstimate, officialToMap, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, roleMetrics, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from './domain.js'
 
 use([BarChart, RadarChart, GridComponent, RadarComponent, TooltipComponent, CanvasRenderer])
 const base = import.meta.env.BASE_URL
-const dataRevision = 'score-3.9.0'
+const dataRevision = 'score-3.9.0-role-data-1.0.0'
 const index = ref({ teams: [] }), selected = ref(null), query = ref(''), region = ref('全部'), error = ref('')
 const heat = ref(null), heatSide = ref('全部'), heatRobot = ref('全部'), heatView = ref('actual'), heatFrom = ref(0), heatTo = ref(420), heatMaskOpacity = ref(.34)
 const gameData = ref(null), activeGame = ref(null), time = ref(0), playing = ref(false), speed = ref(1), tail = ref(20), mapMode = ref('raster'), routeView = ref('actual')
 const visibleRobots = ref({}), compareSlug = ref(''), compareTeam = ref(null)
+const viewMode = ref('team'), roleCatalog = ref({ roles: [] }), selectedRoleSlug = ref('hero'), roleIndex = ref(null), roleTeam = ref(null)
+const roleRegion = ref('全部'), roleQuery = ref(''), roleMetric = ref('availability_pct'), activeRoleGameId = ref(null), roleTime = ref(0)
 let scoreChart, damageChart, timer
 const colors = ['#ff5268','#ff9e54','#ffd166','#9b7bff','#ef70cb','#ff355f','#48a8ff','#58d3ff','#41e1a6','#6f8dff','#61b8ff','#16c7e8']
 const rankedTeams = computed(() => rankTeamsByStrength(index.value.teams))
@@ -63,6 +65,22 @@ const comparisonRows = computed(() => {
     return row
   })
 })
+const selectedRole = computed(() => roleCatalog.value.roles.find(role => role.role_slug === selectedRoleSlug.value))
+const availableRoleMetrics = computed(() => Object.entries(roleMetrics).filter(([key]) => roleIndex.value?.teams?.some(team => team.summary?.[key] !== null && team.summary?.[key] !== undefined && Number.isFinite(Number(team.summary[key])))))
+const roleTeams = computed(() => rankRoleTeams(roleIndex.value?.teams || [], roleMetric.value)
+  .filter(team => (roleRegion.value === '全部' || team.region === roleRegion.value) && (!roleQuery.value || team.team.includes(roleQuery.value))))
+const activeRoleGame = computed(() => roleTeam.value?.games?.find(game => game.game_id === activeRoleGameId.value) || roleTeam.value?.games?.[0] || null)
+const activeRoleFrames = computed(() => activeRoleGame.value ? roleFrameSeries({ ...activeRoleGame.value, frame_columns: roleTeam.value?.frame_columns || [] }) : [])
+const roleMaxPower = computed(() => Math.max(1, ...activeRoleFrames.value.map(frame => frame.power)))
+const roleCurrentFrame = computed(() => {
+  let result = null
+  for (const frame of activeRoleFrames.value) { if (frame.second > roleTime.value) break; result = frame }
+  return result
+})
+const roleTrailPoints = computed(() => activeRoleFrames.value.filter(frame => frame.valid).map(frame => {
+  const actual = officialToMap(frame.x, frame.y)
+  return rasterMapPoint(actual[0], actual[1], 'current').join(',')
+}).join(' '))
 const shownEvents = computed(() => (gameData.value?.events || []).filter(e => e.second <= time.value))
 const currentFrame = computed(() => {
   const frames = gameData.value?.frames || []; let found = []
@@ -106,6 +124,17 @@ function rankLabel(dimension) {
   const ranking = rank ? (rank <= 20 ? `TOP ${rank}` : `第 ${rank}/96`) : '—'
   return evidence == null ? ranking : `${ranking} · 证据 ${Math.round(evidence)}%`
 }
+function roleValue(value, suffix = '') { return value === null || value === undefined ? '不适用' : `${Number(value).toFixed(Number(value) % 1 ? 1 : 0)}${suffix}` }
+function roleSeriesPoints(key) {
+  const duration = Math.max(1, Number(activeRoleGame.value?.duration_sec || 0))
+  const maximum = key === 'power' ? roleMaxPower.value : 1
+  return activeRoleFrames.value.map(frame => `${frame.second / duration * 1000},${210 - Math.max(0, Math.min(1, frame[key] / maximum)) * 190}`).join(' ')
+}
+function roleFramePoint(frame) {
+  if (!frame?.valid) return [0, 0]
+  const actual = officialToMap(frame.x, frame.y)
+  return rasterMapPoint(actual[0], actual[1], 'current')
+}
 function fetchData(path) { return fetch(`${base}${path}?v=${dataRevision}`, { cache: 'no-store' }) }
 async function loadTeam(teamSlug) {
   playing.value = false; gameData.value = null; activeGame.value = null
@@ -119,6 +148,22 @@ async function loadGame(game) {
   const response = await fetchData(`data/games/${game.game_id}.json`); if (!response.ok) throw new Error('对局时间轴加载失败')
   gameData.value = await response.json(); time.value = 0; visibleRobots.value = Object.fromEntries(gameData.value.robots.map((_, i) => [i, true]))
 }
+async function loadRoleIndex(roleSlug = selectedRoleSlug.value) {
+  selectedRoleSlug.value = roleSlug; roleTeam.value = null; activeRoleGameId.value = null; roleTime.value = 0
+  const response = await fetchData(`data/roles/${roleSlug}/index.json`)
+  if (!response.ok) throw new Error('兵种汇总数据加载失败')
+  roleIndex.value = await response.json()
+  const validMetrics = Object.keys(roleMetrics).filter(key => roleIndex.value.teams.some(team => team.summary?.[key] !== null && team.summary?.[key] !== undefined && Number.isFinite(Number(team.summary[key]))))
+  if (!validMetrics.includes(roleMetric.value)) roleMetric.value = validMetrics[0] || 'availability_pct'
+  const first = roleIndex.value.teams.find(team => team.team === '广东工业大学') || roleIndex.value.teams[0]
+  if (first) await loadRoleTeam(first.slug)
+}
+async function loadRoleTeam(teamSlug) {
+  const response = await fetchData(`data/roles/${selectedRoleSlug.value}/teams/${teamSlug}.json`)
+  if (!response.ok) throw new Error('兵种逐局数据加载失败')
+  roleTeam.value = await response.json(); activeRoleGameId.value = roleTeam.value.games?.[0]?.game_id || null; roleTime.value = 0
+}
+function selectRoleGame(game) { activeRoleGameId.value = game.game_id; roleTime.value = 0 }
 function togglePlay() { playing.value = !playing.value }
 function tick() { if (!playing.value || !gameData.value) return; time.value += .1 * speed.value; if (time.value >= gameData.value.game.duration_sec) { time.value = gameData.value.game.duration_sec; playing.value = false } }
 function renderCharts() {
@@ -131,14 +176,26 @@ function renderCharts() {
   damageChart.setOption({grid:{left:120,right:25,top:20,bottom:30},xAxis:{type:'value',axisLabel:{color:'#94a3b8'}},yAxis:{type:'category',data:damage.map(d=>`${d.target_type}·${d.source_type}`).reverse(),axisLabel:{color:'#cbd5e1'}},series:[{type:'bar',data:damage.map(d=>d.damage).reverse(),itemStyle:{color:'#f59e0b'}}],tooltip:{trigger:'axis'}})
 }
 watch(compareSlug, async value => { compareTeam.value = value ? await (await fetchData(`data/teams/${value}.json`)).json() : null })
-onMounted(async () => { timer = setInterval(tick, 100); try { index.value = await (await fetchData('data/index.json')).json(); const first=index.value.teams.find(t=>t.team==='广东工业大学')||rankedTeams.value[0]; if(first) await loadTeam(first.slug) } catch(e) { error.value=e.message } })
+onMounted(async () => { timer = setInterval(tick, 100); try { const [teamResponse, roleResponse] = await Promise.all([fetchData('data/index.json'), fetchData('data/roles/index.json')]); index.value = await teamResponse.json(); roleCatalog.value = await roleResponse.json(); const first=index.value.teams.find(t=>t.team==='广东工业大学')||rankedTeams.value[0]; if(first) await loadTeam(first.slug); await loadRoleIndex(selectedRoleSlug.value) } catch(e) { error.value=e.message } })
 onBeforeUnmount(() => clearInterval(timer))
 </script>
 
 <template>
 <div class="shell">
-  <aside><div class="brand"><span>RMUC 2026</span><strong>战术情报库 v3</strong></div><input v-model="query" placeholder="搜索队伍"><select v-model="region"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in teams" :key="t.slug" :class="{active:selected?.team===t.team}" @click="loadTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.strengthRank}} · {{t.wins}}/{{t.games}} · {{t.region}}<template v-if="t.placement"> · {{t.placement.label}}</template> · 强度 {{strengthGrade(teamStrength(t))}}</small></button></div></aside>
-  <main v-if="selected">
+  <aside><div class="brand"><span>RMUC 2026</span><strong>战术情报库 v3</strong></div><div class="view-tabs"><button :class="{active:viewMode==='team'}" @click="viewMode='team'">队伍分析</button><button :class="{active:viewMode==='role'}" @click="viewMode='role'">兵种分析</button></div><template v-if="viewMode==='team'"><input v-model="query" placeholder="搜索队伍"><select v-model="region"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in teams" :key="t.slug" :class="{active:selected?.team===t.team}" @click="loadTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.strengthRank}} · {{t.wins}}/{{t.games}} · {{t.region}}<template v-if="t.placement"> · {{t.placement.label}}</template> · 强度 {{strengthGrade(teamStrength(t))}}</small></button></div></template><template v-else><select :value="selectedRoleSlug" @change="loadRoleIndex($event.target.value)"><option v-for="role in roleCatalog.roles" :key="role.role_slug" :value="role.role_slug">{{role.role}}</option></select><select v-model="roleMetric"><option v-for="([key,definition]) in availableRoleMetrics" :key="key" :value="key">按{{definition.label}}排序</option></select><input v-model="roleQuery" placeholder="搜索队伍"><select v-model="roleRegion"><option>全部</option><option>南部赛区</option><option>东部赛区</option><option>北部赛区</option></select><div class="team-list"><button v-for="t in roleTeams" :key="t.slug" :class="{active:roleTeam?.team===t.team}" @click="loadRoleTeam(t.slug)"><span>{{t.team}}</span><small>#{{t.factRank}} · {{roleMetrics[roleMetric].label}} {{roleValue(t.factValue,roleMetrics[roleMetric].suffix)}} · {{t.region}}</small></button></div></template></aside>
+  <main v-if="viewMode==='role' && roleTeam && roleIndex" class="role-main">
+    <div class="notice">兵种事实库不会把受击伤害反推给射手。原始秒级数据完整保留；在场率与稳定性汇总排除比赛前 10 秒和后 10 秒。</div>
+    <header><div><p>{{roleTeam.region}} · {{roleTeam.mode==='second'?'完整秒级状态':'完整事件记录'}}</p><h1>{{roleTeam.team}} · {{roleTeam.role}}</h1></div><div class="role-downloads"><a :href="`${base}${roleIndex.downloads.csv_gz}`">下载 CSV.gz</a><a :href="`${base}${roleIndex.downloads.json_gz}`">下载 JSON.gz</a></div></header>
+    <template v-if="roleTeam.mode==='second'">
+      <section class="kpis"><article><span>有效在场率</span><strong>{{roleValue(roleTeam.summary.availability_pct,'%')}}</strong></article><article><span>场均阵亡</span><strong>{{roleValue(roleTeam.summary.deaths_per_game)}}</strong></article><article><span>平均终局血量</span><strong>{{roleValue(roleTeam.summary.terminal_hp_pct,'%')}}</strong></article><article><span>每存活分钟净承伤</span><strong>{{roleValue(roleTeam.summary.combat_damage_per_alive_min)}}</strong></article></section>
+      <section class="panel"><div class="section-head"><h2>兵种事实画像</h2><span>逐指标排名，不合成兵种总分</span></div><div class="metric-pairs role-facts"><span>参赛覆盖<strong>{{roleTeam.summary.role_present_games}} / {{roleTeam.summary.games}} 局</strong></span><span>场均里程<strong>{{roleValue(roleTeam.summary.distance_per_game_m,' m')}}</strong></span><span>推进纵深<strong>{{roleValue(roleTeam.summary.attack_depth_m,' m')}}</strong></span><span>前压在场<strong>{{roleValue(roleTeam.summary.forward_presence_pct,'%')}}</strong></span><span>场均发弹<strong>{{roleValue(roleTeam.summary.shots_per_game)}}</strong></span><span>场均高热<strong>{{roleValue(roleTeam.summary.high_heat_seconds_per_game,' s')}}</strong></span><span>定位覆盖<strong>{{roleValue(roleTeam.summary.position_coverage_pct,'%')}}</strong></span><span>首次阵亡中位<strong>{{roleTeam.summary.median_first_death_sec==null?'—':fmtSecond(roleTeam.summary.median_first_death_sec)}}</strong></span><span>总净承伤<strong>{{roleValue(roleTeam.summary.combat_damage_received)}}</strong></span><span>易伤秒数<strong>{{roleValue(roleTeam.summary.vulnerable_seconds,' s')}}</strong></span></div></section>
+      <section class="panel"><div class="section-head"><h2>逐局兵种表现</h2><span>{{roleTeam.games.length}} 个有效兵种对局</span></div><div class="match-grid"><button v-for="game in roleTeam.games" :key="game.game_id" :class="{active:activeRoleGame?.game_id===game.game_id}" @click="selectRoleGame(game)"><b>{{game.won?'胜':'负'}} · {{game.opponent}}</b><span>{{game.side}}方 · 在场 {{roleValue(game.summary.availability_pct,'%')}}</span><small>阵亡 {{game.summary.deaths}} · 里程 {{roleValue(game.summary.distance_m,' m')}}</small></button></div></section>
+      <section v-if="activeRoleGame" class="grid-two role-telemetry"><article class="panel"><div class="section-head"><h2>血量 / 热量 / 功率时间线</h2><span>{{fmtSecond(roleTime)}} / {{fmtSecond(activeRoleGame.duration_sec)}}</span></div><input class="scrubber" type="range" min="0" :max="activeRoleGame.duration_sec" step="1" v-model.number="roleTime"><svg class="role-line" viewBox="0 0 1000 220" preserveAspectRatio="none"><line x1="0" y1="210" x2="1000" y2="210"/><polyline :points="roleSeriesPoints('hpRatio')" class="hp-line"/><polyline :points="roleSeriesPoints('heatRatio')" class="heat-line"/><polyline :points="roleSeriesPoints('power')" class="power-line"/></svg><div class="role-line-legend"><span class="hp">血量 {{roleValue((roleCurrentFrame?.hpRatio||0)*100,'%')}}</span><span class="heat">热量 {{roleValue((roleCurrentFrame?.heatRatio||0)*100,'%')}}</span><span class="power">功率 {{roleValue(roleCurrentFrame?.power)}}</span></div></article><article class="panel"><div class="section-head"><h2>完整比赛轨迹</h2><span>官方坐标投影</span></div><svg class="field" viewBox="0 0 28 15"><image :href="`${base}maps/field-current.jpg`" width="28" height="15" preserveAspectRatio="none" opacity=".72"/><polyline :points="roleTrailPoints" fill="none" stroke="#f8d66d" stroke-width=".08"/><circle v-if="roleCurrentFrame?.valid" :cx="roleFramePoint(roleCurrentFrame)[0]" :cy="roleFramePoint(roleCurrentFrame)[1]" r=".2" fill="#22d3ee" stroke="white" stroke-width=".04"/></svg></article></section>
+    </template>
+    <template v-else><section class="kpis"><article><span>飞镖命中</span><strong>{{roleTeam.summary.hits}}</strong></article><article><span>累计伤害</span><strong>{{roleTeam.summary.damage}}</strong></article><article><span>命中覆盖</span><strong>{{roleValue(roleTeam.summary.hit_game_pct,'%')}}</strong></article><article><span>首命中中位</span><strong>{{roleTeam.summary.median_first_hit_sec==null?'—':fmtSecond(roleTeam.summary.median_first_hit_sec)}}</strong></article></section><section class="panel"><div class="section-head"><h2>逐局飞镖事件</h2><span>飞镖无连续状态，仅展示闸门与命中</span></div><div class="radar-events dart-events"><div><button v-for="game in roleTeam.games.filter(game=>game.events.length)" :key="game.game_id"><b>局 {{game.game_id}} · {{game.won?'胜':'负'}}</b><span>对手 {{game.opponent}} · {{game.side}}方</span><span>闸门 {{game.summary.gate_events}} · 命中 {{game.summary.hits}} · 伤害 {{game.summary.damage}}</span></button></div></div></section></template>
+    <section class="panel"><h2>口径限制</h2><p v-for="item in roleTeam.limitations" :key="item" class="method">{{item}}</p></section>
+  </main>
+  <main v-else-if="selected">
     <div class="notice">仅使用规则手册实场图和通信协议 28×15m 官方坐标；行为树内部地图、区域 YAML 与 SCAU 叠加图不参与映射。</div>
     <header><div><p>{{selected.summary.region}} <em v-if="selected.placement">{{selected.summary.region}}{{selected.placement.label}}</em></p><h1>{{selected.team}}</h1></div><div class="record"><strong>{{selected.summary.wins}}–{{selected.summary.games-selected.summary.wins}}</strong><span>胜率 {{selected.summary.win_rate.toFixed(1)}}% · 全局 #{{selected.overall_rank}}</span></div></header>
     <section class="kpis"><article><span>场均输出</span><strong>{{selected.summary.avg_damage_dealt?.toFixed(0)}}</strong></article><article><span>场均基地伤害</span><strong>{{selected.summary.avg_base_damage?.toFixed(0)}}</strong></article><article><span>场均前哨伤害</span><strong>{{selected.summary.avg_outpost_damage?.toFixed(0)}}</strong></article><article><span>综合强度评级</span><strong class="strength-grade" :data-grade="grade">{{grade}} · {{strength.toFixed(1)}}</strong></article></section>

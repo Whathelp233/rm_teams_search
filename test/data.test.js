@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { createReadStream, readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { teamStrength } from '../src/domain.js'
 
 const readJson = path => JSON.parse(readFileSync(new URL(path, import.meta.url), 'utf8'))
@@ -95,5 +96,48 @@ test('transparent opponent score excludes direct meetings and reconstructs its t
     const raw = 100 * (.75 * firstOrder.get(team.team) + .25 * secondOrder)
     const expected = 50 + (raw - 50) * opponents.length / (opponents.length + 3)
     assert.ok(Math.abs(expected - team.opponent_score_analysis.score) < .06, team.team)
+  }
+})
+
+test('published role catalog covers every second and keeps dart as event data', () => {
+  const catalog = readJson('../public/data/roles/index.json')
+  assert.equal(catalog.schema_version, 'role-data-1.0.0')
+  assert.equal(catalog.roles.length, 7)
+  assert.equal(catalog.total_second_rows, 2990075)
+  assert.equal(catalog.total_events, 1376165)
+  assert.deepEqual(catalog.roles.map(role => role.role), ['英雄', '工程', '步兵3', '步兵4', '哨兵', '空中', '飞镖'])
+  for (const role of catalog.roles) {
+    const listing = readJson(`../public/data/roles/${role.role_slug}/index.json`)
+    assert.equal(listing.schema_version, 'role-data-1.0.0')
+    assert.equal(listing.teams.length, 96)
+    assert.equal(listing.counts.rows, role.counts.rows)
+    assert.equal(listing.counts.events, role.counts.events)
+  }
+  const teamIndex = readJson('../public/data/index.json')
+  const guangdong = teamIndex.teams.find(team => team.team === '广东工业大学')
+  const hero = readJson(`../public/data/roles/hero/teams/${guangdong.slug}.json`)
+  assert.equal(hero.role, '英雄')
+  assert.equal(hero.frame_columns.length, 17)
+  assert.ok(hero.games.length > 0)
+  assert.equal(hero.games[0].frames.length, hero.games[0].summary.tracked_seconds)
+  assert.match(hero.limitations[0], /射手身份/)
+  const engineer = readJson(`../public/data/roles/engineer/teams/${guangdong.slug}.json`)
+  assert.equal(engineer.summary.shots_per_game, null)
+  const dart = readJson(`../public/data/roles/dart/teams/${guangdong.slug}.json`)
+  assert.equal(dart.mode, 'event')
+  assert.equal('frames' in dart.games[0], false)
+})
+
+test('role download manifest sizes and sha256 checksums match generated archives', async () => {
+  const manifest = readJson('../public/downloads/roles/manifest.json')
+  assert.equal(manifest.schema_version, 'role-data-1.0.0')
+  assert.equal(manifest.files.length, 14)
+  for (const file of manifest.files) {
+    const path = new URL(`../public/${file.path}`, import.meta.url)
+    assert.equal(statSync(path).size, file.bytes, file.path)
+    assert.deepEqual([...readFileSync(path).subarray(0, 2)], [0x1f, 0x8b], file.path)
+    const digest = createHash('sha256')
+    await new Promise((resolve, reject) => createReadStream(path).on('data', chunk => digest.update(chunk)).on('end', resolve).on('error', reject))
+    assert.equal(digest.digest('hex'), file.sha256, file.path)
   }
 })

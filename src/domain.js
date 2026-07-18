@@ -197,6 +197,62 @@ export function rankTeamsByStrength(teams) {
     .map((team, index) => ({ ...team, strengthRank: index + 1, strengthValue: rounded(teamStrength(team)) }))
 }
 
+export const roleMetrics = {
+  availability_pct: { label: '有效在场率', suffix: '%', direction: 'desc' },
+  deaths_per_game: { label: '场均阵亡', suffix: '', direction: 'asc' },
+  terminal_hp_pct: { label: '平均终局血量', suffix: '%', direction: 'desc' },
+  distance_per_game_m: { label: '场均里程', suffix: ' m', direction: 'desc' },
+  attack_depth_m: { label: '平均推进纵深', suffix: ' m', direction: 'desc' },
+  forward_presence_pct: { label: '前压在场占比', suffix: '%', direction: 'desc' },
+  combat_damage_per_alive_min: { label: '每存活分钟净承伤', suffix: '', direction: 'asc' },
+  shots_per_game: { label: '场均发弹', suffix: '', direction: 'desc' },
+  high_heat_seconds_per_game: { label: '场均高热秒数', suffix: ' s', direction: 'asc' },
+  position_coverage_pct: { label: '定位覆盖', suffix: '%', direction: 'desc' },
+  hits: { label: '飞镖命中', suffix: '', direction: 'desc' },
+  damage: { label: '飞镖伤害', suffix: '', direction: 'desc' },
+  hit_game_pct: { label: '飞镖命中覆盖', suffix: '%', direction: 'desc' },
+  median_first_hit_sec: { label: '首命中中位时间', suffix: ' s', direction: 'asc' },
+  gate_events: { label: '闸门事件', suffix: '', direction: 'desc' },
+}
+
+export function rankRoleTeams(teams, metric = 'availability_pct') {
+  const definition = roleMetrics[metric] || roleMetrics.availability_pct
+  const usable = (teams || []).filter(team => team?.summary?.[metric] !== null && team?.summary?.[metric] !== undefined && Number.isFinite(Number(team.summary[metric])))
+  const sorted = [...usable].sort((first, second) => {
+    const difference = Number(first.summary[metric]) - Number(second.summary[metric])
+    return (definition.direction === 'asc' ? difference : -difference) || first.team.localeCompare(second.team, 'zh-CN')
+  })
+  return sorted.map(team => {
+    const value = Number(team.summary[metric])
+    const factRank = 1 + usable.filter(other => definition.direction === 'asc'
+      ? Number(other.summary[metric]) < value
+      : Number(other.summary[metric]) > value).length
+    return { ...team, factRank, factValue: value }
+  })
+}
+
+export function roleFrameSeries(game) {
+  const columns = game?.frame_columns || []
+  const index = Object.fromEntries(columns.map((column, position) => [column, position]))
+  const frames = game?.frames || []
+  return frames.map(frame => {
+    const heat17 = Number(frame[index.heat17] || 0)
+    const heat42 = Number(frame[index.heat42] || 0)
+    const heat17Limit = Number(frame[index.heat17_limit] || 0)
+    const heat42Limit = Number(frame[index.heat42_limit] || 0)
+    return {
+      raw: frame,
+      second: Number(frame[index.second] || 0),
+      hpRatio: Number(frame[index.max_hp]) > 0 ? Number(frame[index.hp] || 0) / Number(frame[index.max_hp]) : 0,
+      heatRatio: Math.max(heat17Limit > 0 ? heat17 / heat17Limit : 0, heat42Limit > 0 ? heat42 / heat42Limit : 0),
+      power: Number(frame[index.power] || 0),
+      x: Number(frame[index.x]),
+      y: Number(frame[index.y]),
+      valid: Number.isFinite(Number(frame[index.x])) && Number.isFinite(Number(frame[index.y])) && Number(frame[index.x]) >= 0 && Number(frame[index.x]) <= 28 && Number(frame[index.y]) >= 0 && Number(frame[index.y]) <= 15 && !(Number(frame[index.x]) === 0 && Number(frame[index.y]) === 0),
+    }
+  })
+}
+
 export function matchupEstimate(primary, opponent, headToHead = []) {
   const primaryStrength = teamStrength(primary)
   const opponentStrength = teamStrength(opponent)
