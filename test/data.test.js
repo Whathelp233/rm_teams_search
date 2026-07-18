@@ -8,14 +8,14 @@ const readJson = path => JSON.parse(readFileSync(new URL(path, import.meta.url),
 test('all published teams use complete score schema 3.1', () => {
   const index = readJson('../public/data/index.json')
   assert.equal(index.schema_version, '3.1.0')
-  assert.equal(index.data_version, 'score-3.1.0')
+  assert.equal(index.data_version, 'score-3.1.1')
   assert.equal(index.teams.length, 96)
   const dimensions = ['firepower', 'objective', 'spatial', 'defense', 'resource', 'adaptability']
   const placementCounts = {}
   for (const listing of index.teams) {
     const team = readJson(`../public/data/teams/${listing.slug}.json`)
     assert.equal(team.schema_version, '3.1.0', listing.team)
-    assert.equal(team.data_version, 'score-3.1.0', listing.team)
+    assert.equal(team.data_version, 'score-3.1.1', listing.team)
     assert.equal('consistency_analysis' in team, false, listing.team)
     assert.equal(team.overall_rank, listing.overall_rank, listing.team)
     assert.ok(team.overall_rank >= 1 && team.overall_rank <= 96, listing.team)
@@ -44,6 +44,6 @@ test('defense is bounded and adaptability is condition-based rather than a resul
   assert.ok(Math.max(...defense) - Math.min(...defense) < 40)
   for (const team of teams) {
     assert.deepEqual(Object.keys(team.defense_analysis.weights), ['trade_resilience', 'mobile_resilience', 'outpost_denial', 'base_denial', 'collapse_resistance'])
-    assert.deepEqual(Object.keys(team.adaptability_analysis.weights), ['side_transfer', 'opponent_robustness', 'strong_opponent_residual', 'setback_adjustment', 'viable_variants'])
+    assert.deepEqual(Object.keys(team.adaptability_analysis.weights), ['side_transfer', 'opponent_robustness', 'strong_opponent_residual', 'setback_adjustment', 'strategy_switch_effect'])
   }
 })
