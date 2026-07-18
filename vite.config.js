@@ -4,5 +4,5 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   base: process.env.VITE_BASE_PATH || '/',
   plugins: [vue()],
-  build: { sourcemap: true }
+  build: { sourcemap: process.env.VITE_SOURCEMAP === 'true', chunkSizeWarningLimit: 600 }
 })
