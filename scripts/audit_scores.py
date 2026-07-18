@@ -67,7 +67,7 @@ def main():
     for team in teams:
         actual = team["strength_analysis"]["tactical_dimension_weights"]
         if actual != expected_dimension_weights:
-            failures.append(f"{team['team']} tactical dimension weights differ from score 3.6")
+            failures.append(f"{team['team']} tactical dimension weights differ from score 3.7")
     for region in ("南部赛区", "东部赛区", "北部赛区"):
         regional = [team for team in teams if team["summary"]["region"] == region]
         strength = [team["strength_analysis"]["score"] for team in regional]
