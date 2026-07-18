@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, rankTeamsByStrength, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from '../src/domain.js'
+import { aggregateHeatCells, canonicalPoint, densityOpacity, matchupEstimate, officialToMap, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, strengthGrade, summarizeDimensions, teamPerspectivePoint, teamStrength } from '../src/domain.js'
 
 test('red side remains in official coordinates', () => {
   assert.deepEqual(canonicalPoint(3, 4, '红'), [3, 4])
@@ -13,6 +13,14 @@ test('blue side is centrally mirrored for own-side view', () => {
 test('official positive Y is vertically flipped onto the field image', () => {
   assert.deepEqual(officialToMap(3, 4), [3, 11])
   assert.deepEqual(officialToMap(25, 11), [25, 4])
+})
+
+test('raster coordinates respect the inner wall ROI instead of the image border', () => {
+  const placement = rasterMapPlacement('current')
+  assert.deepEqual(rasterMapPoint(0, 0, 'current'), [placement.offsetX, placement.offsetY])
+  assert.deepEqual(rasterMapPoint(14, 7.5, 'current'), rasterMapCenter('current'))
+  assert.ok(rasterMapPoint(28, 15, 'current')[0] < 28)
+  assert.ok(rasterMapPoint(28, 15, 'current')[1] < 15)
 })
 
 test('blue team perspective rotates both teams as one world', () => {

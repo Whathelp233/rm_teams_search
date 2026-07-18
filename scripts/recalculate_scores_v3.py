@@ -79,6 +79,52 @@ def sigmoid(value):
     return z / (1.0 + z)
 
 
+def infer_placements(game_rows):
+    """Infer elimination finish from each region's final bracket series."""
+    series = {}
+    for row in game_rows:
+        key = (row["region"], int(row["series_no"]))
+        item = series.setdefault(key, {"teams": (row["red"], row["blue"]), "wins": defaultdict(int)})
+        winner = row["red"] if row["winner"] == "红" else row["blue"]
+        item["wins"][winner] += 1
+    for item in series.values():
+        item["winner"] = max(item["wins"], key=item["wins"].get)
+        item["loser"] = next(team for team in item["teams"] if team != item["winner"])
+    placements = {}
+    for region in sorted({key[0] for key in series}):
+        regional = {number: item for (item_region, number), item in series.items() if item_region == region}
+        final_number = max(regional)
+        final, third = regional[final_number], regional[final_number - 1]
+        top_four = set(final["teams"]) | set(third["teams"])
+        semifinal_candidates = [
+            (number, item) for number, item in regional.items()
+            if number < final_number - 1 and set(item["teams"]) <= top_four
+        ]
+        semifinals = sorted(semifinal_candidates, reverse=True)[:2]
+        semifinal_cutoff = min(number for number, _ in semifinals)
+        quarterfinals = {}
+        for team in top_four:
+            candidates = [(number, item) for number, item in regional.items() if number < semifinal_cutoff and team in item["teams"]]
+            if candidates:
+                number, item = max(candidates, key=lambda pair: pair[0]); quarterfinals[number] = item
+        quarterfinal_cutoff = min(quarterfinals)
+        quarterfinal_teams = {team for item in quarterfinals.values() for team in item["teams"]}
+        round_of_16 = {}
+        for team in quarterfinal_teams:
+            candidates = [(number, item) for number, item in regional.items() if number < quarterfinal_cutoff and team in item["teams"]]
+            if candidates:
+                number, item = max(candidates, key=lambda pair: pair[0]); round_of_16[number] = item
+        for item in round_of_16.values():
+            placements[item["loser"]] = {"label": "16强", "tier": 16, "region": region}
+        for item in quarterfinals.values():
+            placements[item["loser"]] = {"label": "八强", "tier": 8, "region": region}
+        placements[third["loser"]] = {"label": "殿军", "tier": 4, "region": region}
+        placements[third["winner"]] = {"label": "季军", "tier": 3, "region": region}
+        placements[final["loser"]] = {"label": "亚军", "tier": 2, "region": region}
+        placements[final["winner"]] = {"label": "冠军", "tier": 1, "region": region}
+    return placements
+
+
 def analysis(raw_by_team, weights, games_by_team, samples_by_team=None):
     vectors = {key: [raw.get(key) for raw in raw_by_team.values()] for key in weights}
     result = {}
@@ -190,7 +236,7 @@ def main():
         hp[(row["game_id"], row["team"])] = dict(row)
 
     game_results = list(connection.execute(
-        "SELECT game_id,红方学校 red,蓝方学校 blue,胜方 winner,开始时间 started FROM matches ORDER BY 开始时间,game_id"
+        "SELECT game_id,赛区 region,场次号 series_no,红方学校 red,蓝方学校 blue,胜方 winner,开始时间 started FROM matches ORDER BY 开始时间,game_id"
     ))
     connection.close()
 
@@ -336,22 +382,46 @@ def main():
         for team in teams:
             ratings[team] -= center
     rating_values = list(ratings.values())
+    placements = infer_placements(game_results)
+    dimension_ranks = {
+        team: {
+            dimension: 1 + sum(analyses[dimension][other]["score"] > analyses[dimension][team]["score"] for other in teams)
+            for dimension in COMPONENT_WEIGHTS
+        }
+        for team in teams
+    }
+    result_scores = {team: shrink(percentile(rating_values, ratings[team]), games_by_team[team]) for team in teams}
+    tactical_scores = {
+        team: sum(analyses[name][team]["score"] * DIMENSION_WEIGHTS[name] for name in DIMENSION_WEIGHTS)
+        for team in teams
+    }
+    strength_scores = {team: 0.75 * tactical_scores[team] + 0.25 * result_scores[team] for team in teams}
+    overall_ranks = {team: 1 + sum(strength_scores[other] > strength_scores[team] for other in teams) for team in teams}
 
     index["schema_version"] = "3.0.0"
-    index["data_version"] = "score-3.0.0"
+    index["data_version"] = "score-3.0.1"
+    index["placement_method"] = {
+        "format": "参赛手册规定的16进8、8进4、半决赛、季军争夺战和冠军争夺战，结合数据库实际胜负推导",
+        "sources": [
+            "RMUC 2026 东部赛区参赛手册 V2.0.0",
+            "RMUC 2026 南部赛区参赛手册 V2.0.0",
+            "RMUC 2026 北部赛区参赛手册 V2.0.0",
+        ],
+    }
     index["scoring_notice"] = "六维逐局事实、统一百分位、小样本收缩；覆盖率仅作置信度；综合强度含正则化赛程强度"
     for team, (path, payload) in payloads.items():
         scores = {name: analyses[name][team]["score"] for name in COMPONENT_WEIGHTS}
-        tactical = sum(scores[name] * DIMENSION_WEIGHTS[name] for name in DIMENSION_WEIGHTS)
-        result = shrink(percentile(rating_values, ratings[team]), games_by_team[team])
-        strength = 0.75 * tactical + 0.25 * result
+        tactical, result, strength = tactical_scores[team], result_scores[team], strength_scores[team]
         position_points = sum(float(match.get("valid_position_points") or 0) for match in payload["matches"])
         invalid_points = sum(float(match.get("invalid_position_points") or 0) for match in payload["matches"])
         position_coverage = position_points / max(1.0, position_points + invalid_points)
         confidence = 100.0 * games_by_team[team] / (games_by_team[team] + 8.0) * math.sqrt(position_coverage)
-        payload["schema_version"] = "3.0.0"; payload["data_version"] = "score-3.0.0"
+        payload["schema_version"] = "3.0.0"; payload["data_version"] = "score-3.0.1"
         payload.pop("consistency_analysis", None)
         payload["scores"] = scores
+        payload["dimension_ranks"] = dimension_ranks[team]
+        payload["overall_rank"] = overall_ranks[team]
+        payload["placement"] = placements.get(team)
         for name, score in scores.items():
             payload["summary"][f"{name}_score"] = score
             detail = analyses[name][team]
@@ -373,6 +443,9 @@ def main():
         listing = listings[team]
         listing["scores"] = scores; listing["strength_analysis"] = payload["strength_analysis"]
         listing["score_confidence"] = payload["score_confidence"]
+        listing["dimension_ranks"] = dimension_ranks[team]
+        listing["overall_rank"] = overall_ranks[team]
+        listing["placement"] = placements.get(team)
         compact_write(path, payload)
     compact_write(index_path, index)
     print(f"recalculated {len(teams)} teams with score schema 3.0.0")

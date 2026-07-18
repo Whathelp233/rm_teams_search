@@ -8,17 +8,23 @@ const readJson = path => JSON.parse(readFileSync(new URL(path, import.meta.url),
 test('all published teams use complete score schema 3.0', () => {
   const index = readJson('../public/data/index.json')
   assert.equal(index.schema_version, '3.0.0')
-  assert.equal(index.data_version, 'score-3.0.0')
+  assert.equal(index.data_version, 'score-3.0.1')
   assert.equal(index.teams.length, 96)
   const dimensions = ['firepower', 'objective', 'spatial', 'defense', 'resource', 'adaptability']
+  const placementCounts = {}
   for (const listing of index.teams) {
     const team = readJson(`../public/data/teams/${listing.slug}.json`)
     assert.equal(team.schema_version, '3.0.0', listing.team)
-    assert.equal(team.data_version, 'score-3.0.0', listing.team)
+    assert.equal(team.data_version, 'score-3.0.1', listing.team)
     assert.equal('consistency_analysis' in team, false, listing.team)
+    assert.equal(team.overall_rank, listing.overall_rank, listing.team)
+    assert.ok(team.overall_rank >= 1 && team.overall_rank <= 96, listing.team)
+    if (team.placement) placementCounts[team.placement.label] = (placementCounts[team.placement.label] || 0) + 1
     for (const dimension of dimensions) {
       const detail = team[`${dimension}_analysis`]
       assert.equal(detail.version, '3.0.0', `${listing.team} ${dimension}`)
+      assert.ok(team.dimension_ranks[dimension] >= 1 && team.dimension_ranks[dimension] <= 96, `${listing.team} ${dimension} rank`)
+      assert.equal(team.dimension_ranks[dimension], listing.dimension_ranks[dimension], `${listing.team} ${dimension} listing rank`)
       const reconstructed = Object.entries(detail.weights)
         .reduce((total, [key, weight]) => total + detail.components[key] * weight, 0)
       assert.ok(Math.abs(reconstructed - team.scores[dimension]) < .12, `${listing.team} ${dimension}`)
@@ -26,4 +32,7 @@ test('all published teams use complete score schema 3.0', () => {
     assert.ok(Math.abs(teamStrength(team) - team.strength_analysis.score) < .15, listing.team)
     assert.equal(team.score_confidence.enters_score, false, listing.team)
   }
+  assert.deepEqual(placementCounts, { '冠军': 3, '16强': 24, '八强': 12, '季军': 3, '亚军': 3, '殿军': 3 })
+  assert.deepEqual(index.teams.filter(team => team.placement?.label === '冠军').map(team => team.team).sort(),
+    ['东北大学', '中国石油大学（华东）', '华南农业大学'])
 })
