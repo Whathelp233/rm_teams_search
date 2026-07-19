@@ -28,7 +28,7 @@ DIMENSION_WEIGHTS = {
     "adaptability": 0.01,
 }
 MATCHUP_DIMENSION_WEIGHTS = {
-    "南部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.15, "defense": 0.06, "resource": 0.14},
+    "南部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.17, "defense": 0.02, "resource": 0.16},
     "东部赛区": DIMENSION_WEIGHTS,
     "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.04, "resource": 0.20},
 }
@@ -700,10 +700,10 @@ def main():
     }
     index["scoring_notice"] = "六维4.0：按规则5.8胜负优先级设置权重先验；滚动时间窗回测选择六维战术事实作为综合强度，Bradley-Terry赛果与逐对手分作为独立赛程证据，不重复加分"
     index["matchup_validation"] = {
-        "model_version": "matchup-4.5.0",
-        "game": {"samples": 276, "brier": 0.212041, "accuracy": 0.684783},
+        "model_version": "matchup-4.6.0",
+        "game": {"samples": 276, "brier": 0.211341, "accuracy": 0.684783},
         "series": {
-            "samples": 112, "brier": 0.181003, "accuracy": 0.758929, "ece": 0.052797,
+            "samples": 112, "brier": 0.180191, "accuracy": 0.758929, "ece": 0.053252,
             "bo3_samples": 106, "bo5_samples": 6, "method": "iid_binomial", "temperature": 1.0,
         },
         "bo5_data_limited": True,
@@ -745,13 +745,13 @@ def main():
             "raw_win_rate_pct": rounded(100.0 * sum(bool(match.get("won")) for match in payload["matches"]) / max(1, len(payload["matches"]))),
             "opponent_adjustment": "result_score is estimated jointly from every opponent and red/blue side; transparent opponent score is audit evidence and is not added twice",
             "tactical_weight": 1.0, "result_weight": 0.0,
-            "matchup_model_version": "4.5.0",
+            "matchup_model_version": "4.6.0",
             "matchup_result_weights": {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0, "跨赛区": 0.0},
             "matchup_scales": {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0, "跨赛区": 22.0},
             "matchup_stage_scale_multipliers": {"南部赛区": {"小组赛": 1.0, "淘汰赛": 0.8}, "东部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}, "北部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}},
             "matchup_gap_scale_multipliers": {"南部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 0.8}, "东部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0}, "北部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0}},
-            "matchup_uncertainty_floor_pct": {"南部赛区": 13.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0},
-            "matchup_mean_fold_ece_pct": {"南部赛区": 12.2, "东部赛区": 12.2, "北部赛区": 7.2, "跨赛区": None},
+            "matchup_uncertainty_floor_pct": {"南部赛区": 14.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0},
+            "matchup_mean_fold_ece_pct": {"南部赛区": 13.2, "东部赛区": 12.2, "北部赛区": 7.2, "跨赛区": None},
             "matchup_dimension_weights": {
                 "全国统一": DIMENSION_WEIGHTS,
                 **MATCHUP_DIMENSION_WEIGHTS,

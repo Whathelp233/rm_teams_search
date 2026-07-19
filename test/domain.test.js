@@ -227,9 +227,9 @@ test('South matchup calibration reduces duplicated defense weight and values ind
   const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '南部赛区' }, scores: { ...weakerTeam.scores, spatial: 0, defense: 100 }, strength_analysis: { score: 50, result_score: 50 } }
   const south = matchupEstimate(first, second)
   assert.match(south.weightProfile, /^南部赛区校准/)
-  assert.equal(south.dimensionWeights.spatial, .15)
-  assert.equal(south.dimensionWeights.defense, .06)
-  assert.equal(south.dimensionWeights.resource, .14)
+  assert.equal(south.dimensionWeights.spatial, .17)
+  assert.equal(south.dimensionWeights.defense, .02)
+  assert.equal(south.dimensionWeights.resource, .16)
   assert.ok(south.primaryPct > 50)
 })
 
@@ -261,8 +261,8 @@ test('regional matchup intervals cover rolling calibration drift', () => {
     { ...strongTeam, summary: { ...strongTeam.summary, region: '南部赛区' } },
     { ...weakerTeam, summary: { ...weakerTeam.summary, region: '南部赛区' } },
   )
-  assert.equal(south.foldEcePct, 12.2)
-  assert.equal(south.modelMargin, 13)
+  assert.equal(south.foldEcePct, 13.2)
+  assert.equal(south.modelMargin, 14)
   const east = matchupEstimate(
     { ...strongTeam, summary: { ...strongTeam.summary, region: '东部赛区' } },
     { ...weakerTeam, summary: { ...weakerTeam.summary, region: '东部赛区' } },
