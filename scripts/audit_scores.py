@@ -13,6 +13,16 @@ STAGES = {None: 0, "16强": 1, "八强": 2, "殿军": 3, "季军": 4, "亚军": 
 ELIMINATION_STARTS = {
     "南部赛区": "2026-05-16 14:10:00", "东部赛区": "2026-05-24 14:10:00", "北部赛区": "2026-06-01 14:10:00",
 }
+MATCHUP_MODEL_VERSION = "matchup-4.6.0"
+TACTICAL_DIMENSION_WEIGHTS = {
+    "firepower": 0.08, "objective": 0.56, "spatial": 0.12,
+    "defense": 0.11, "resource": 0.12, "adaptability": 0.01,
+}
+MATCHUP_DIMENSION_WEIGHTS = {
+    "南部赛区": {**TACTICAL_DIMENSION_WEIGHTS, "spatial": 0.17, "defense": 0.02, "resource": 0.16},
+    "东部赛区": TACTICAL_DIMENSION_WEIGHTS,
+    "北部赛区": {**TACTICAL_DIMENSION_WEIGHTS, "spatial": 0.04, "resource": 0.20},
+}
 
 
 def ranks(values):
@@ -61,10 +71,7 @@ def main():
 
     failures = []
     report = {"schema": index["schema_version"], "regions": {}, "dimensions": {}, "regional_dimensions": {}}
-    expected_dimension_weights = {
-        "firepower": 0.08, "objective": 0.56, "spatial": 0.12,
-        "defense": 0.11, "resource": 0.12, "adaptability": 0.01,
-    }
+    expected_dimension_weights = TACTICAL_DIMENSION_WEIGHTS
     expected_component_weights = {
         "firepower": {"clean_output": 0.35, "accuracy": 0.15, "kill_conversion": 0.25, "pressure_uptime": 0.25},
         "objective": {"outpost_pressure": 0.10, "outpost_conversion": 0.25, "base_pressure": 0.15, "base_conversion": 0.35, "strategic_tools": 0.15},
@@ -75,6 +82,11 @@ def main():
     }
     if not math.isclose(sum(expected_dimension_weights.values()), 1.0):
         failures.append("published tactical dimension weights do not sum to 1")
+    if index.get("matchup_validation", {}).get("model_version") != MATCHUP_MODEL_VERSION:
+        failures.append("published matchup model version differs from the score audit")
+    for region, weights in MATCHUP_DIMENSION_WEIGHTS.items():
+        if not math.isclose(sum(weights.values()), 1.0, abs_tol=1e-12):
+            failures.append(f"{region} matchup dimension weights do not sum to 1")
     for team in teams:
         actual = team["strength_analysis"]["tactical_dimension_weights"]
         if actual != expected_dimension_weights:
@@ -178,11 +190,7 @@ def main():
             if region != "全部" and game_region != region:
                 continue
             result_weight = 0.10 if game_region == "东部赛区" else 0.0
-            weights = expected_dimension_weights
-            if game_region == "南部赛区":
-                weights = {**expected_dimension_weights, "spatial": 0.15, "defense": 0.08}
-            elif game_region == "北部赛区":
-                weights = {**expected_dimension_weights, "spatial": 0.05, "resource": 0.19}
+            weights = MATCHUP_DIMENSION_WEIGHTS[game_region]
             primary_tactical = sum(payload_by_team[primary]["scores"][key] * weight for key, weight in weights.items())
             opponent_tactical = sum(payload_by_team[opponent]["scores"][key] * weight for key, weight in weights.items())
             primary_model = (1.0 - result_weight) * primary_tactical + result_weight * results[primary]
@@ -212,6 +220,8 @@ def main():
             failures.append(f"{region} matchup bias {bias:+.3f} outside ±0.06")
 
     report["tactical_dimension_weights"] = expected_dimension_weights
+    report["matchup_model_version"] = MATCHUP_MODEL_VERSION
+    report["matchup_dimension_weights"] = MATCHUP_DIMENSION_WEIGHTS
     report["component_weights"] = expected_component_weights
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if failures:
