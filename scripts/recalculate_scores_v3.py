@@ -699,6 +699,15 @@ def main():
         ],
     }
     index["scoring_notice"] = "六维4.0：按规则5.8胜负优先级设置权重先验；滚动时间窗回测选择六维战术事实作为综合强度，Bradley-Terry赛果与逐对手分作为独立赛程证据，不重复加分"
+    index["matchup_validation"] = {
+        "model_version": "matchup-4.4.0",
+        "game": {"samples": 276, "brier": 0.212452, "accuracy": 0.684783},
+        "series": {
+            "samples": 112, "brier": 0.181564, "accuracy": 0.758929, "ece": 0.049078,
+            "bo3_samples": 106, "bo5_samples": 6, "method": "iid_binomial", "temperature": 1.0,
+        },
+        "bo5_data_limited": True,
+    }
     for team, (path, payload) in payloads.items():
         scores = {name: analyses[name][team]["score"] for name in COMPONENT_WEIGHTS}
         tactical, result, strength = tactical_scores[team], result_scores[team], strength_scores[team]

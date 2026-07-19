@@ -39,6 +39,11 @@ ELIMINATION_STARTS = {
     "东部赛区": "2026-05-24 14:10:00",
     "北部赛区": "2026-06-01 14:10:00",
 }
+BO5_MATCH_NUMBERS = {
+    "南部赛区": {87, 88},
+    "东部赛区": {87, 88},
+    "北部赛区": {89, 90},
+}
 RELEASE_UNCERTAINTY_FLOORS = {"南部赛区": 13.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0}
 RELEASE_3_8_BASELINE = {
     "overall": {"brier": 0.2271718878310605, "accuracy": 0.6413043478260869},
@@ -171,6 +176,19 @@ def residual_metrics(rows):
         "observed_win_rate": observed,
         "residual": observed - mean_prediction,
     }
+
+
+def series_probability(single_game_probability, best_of):
+    wins_needed = best_of // 2 + 1
+    return sum(
+        math.comb(best_of, wins) * single_game_probability ** wins * (1 - single_game_probability) ** (best_of - wins)
+        for wins in range(wins_needed, best_of + 1)
+    )
+
+
+def tempered_probability(predicted, temperature):
+    predicted = min(1 - 1e-9, max(1e-9, predicted))
+    return 1.0 / (1.0 + math.exp(-math.log(predicted / (1 - predicted)) / temperature))
 
 
 def confidence_calibration(rows):
@@ -327,7 +345,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "structural_correction_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
     failures = []
     for dimension, weights in CURRENT_COMPONENT_WEIGHTS.items():
         errors = [
@@ -557,6 +575,116 @@ def main():
                 failures.append(f"{region} {family} has a stable structural correction; release calibration must be reviewed")
         correction_report[region] = region_report
     report["structural_correction_validation"] = correction_report
+
+    # The tournament simulator consumes BO3/BO5 probabilities, not isolated
+    # game probabilities. Rebuild complete official series inside each future
+    # fold and verify the independent-game binomial conversion separately.
+    grouped_series = defaultdict(list)
+    for record in records:
+        grouped_series[(record["fold"], record["region"], record["match_no"])].append(record)
+    series_samples = []
+    for (fold, region, match_no), series_records in grouped_series.items():
+        ordered = sorted(series_records, key=lambda item: item["round_no"])
+        best_of = 5 if match_no in BO5_MATCH_NUMBERS[region] else 3
+        wins_needed = best_of // 2 + 1
+        primary_wins = sum(bool(item["won"]) for item in ordered)
+        opponent_wins = len(ordered) - primary_wins
+        if ordered[0]["round_no"] != 1 or max(primary_wins, opponent_wins) < wins_needed:
+            continue
+        single_probability = probability(
+            release_strength_diff(ordered[0]), 0.0, region, ordered[0].get("stage")
+        )
+        series_samples.append({
+            "fold": fold, "region": region, "match_no": match_no,
+            "best_of": best_of, "single_probability": single_probability,
+            "won": primary_wins > opponent_wins,
+        })
+
+    def series_profile(transform):
+        by_fold, by_region, by_best_of = defaultdict(list), defaultdict(list), defaultdict(list)
+        all_rows = []
+        for sample in series_samples:
+            row = (transform(sample), sample["won"])
+            all_rows.append(row)
+            by_fold[sample["fold"]].append(row)
+            by_region[sample["region"]].append(row)
+            by_best_of[str(sample["best_of"])].append(row)
+        return {
+            "overall": metrics(all_rows),
+            "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
+            "regions": {region: metrics(by_region[region]) for region in REGIONS},
+            "best_of": {key: metrics(value) for key, value in sorted(by_best_of.items())},
+            "favorite_calibration": confidence_calibration(all_rows),
+        }
+
+    single_series_profile = series_profile(lambda sample: sample["single_probability"])
+    iid_series_profile = series_profile(lambda sample: series_probability(sample["single_probability"], sample["best_of"]))
+    temperature_candidates = []
+    for step in range(14, 31):
+        temperature = step / 20
+        profile = series_profile(lambda sample, temperature=temperature: tempered_probability(
+            series_probability(sample["single_probability"], sample["best_of"]), temperature
+        ))
+        temperature_candidates.append({
+            "temperature": temperature,
+            "overall": profile["overall"], "folds": profile["folds"], "regions": profile["regions"],
+            "overall_brier_delta": profile["overall"]["brier"] - iid_series_profile["overall"]["brier"],
+            "max_fold_brier_delta": max(
+                profile["folds"][str(fold)]["brier"] - iid_series_profile["folds"][str(fold)]["brier"]
+                for fold in range(1, len(FOLDS) + 1)
+            ),
+            "max_region_brier_delta": max(
+                profile["regions"][region]["brier"] - iid_series_profile["regions"][region]["brier"]
+                for region in REGIONS
+            ),
+        })
+    temperature_candidates.sort(key=lambda item: (item["max_fold_brier_delta"], item["max_region_brier_delta"], item["overall_brier_delta"]))
+    stable_series_candidates = [
+        item for item in temperature_candidates
+        if item["max_fold_brier_delta"] <= 1e-12
+        and item["max_region_brier_delta"] <= 1e-12
+        and item["overall_brier_delta"] <= -0.001
+    ]
+    report["series_conversion_validation"] = {
+        "complete_series": len(series_samples),
+        "bo5_match_numbers": {region: sorted(values) for region, values in BO5_MATCH_NUMBERS.items()},
+        "single_game_probability": single_series_profile,
+        "release_iid_binomial": iid_series_profile,
+        "temperature_validation": {
+            "selected_temperature": 1.0,
+            "stable_candidates": stable_series_candidates,
+            "best_by_worst_fold": temperature_candidates[:5],
+        },
+    }
+    published_validation = json.loads((DATA / "index.json").read_text(encoding="utf-8")).get("matchup_validation", {})
+    published_series = published_validation.get("series", {})
+    report["series_conversion_validation"]["published_contract"] = published_validation
+    expected_series_contract = {
+        "samples": len(series_samples),
+        "brier": round(iid_series_profile["overall"]["brier"], 6),
+        "accuracy": round(iid_series_profile["overall"]["accuracy"], 6),
+        "ece": round(iid_series_profile["favorite_calibration"]["ece"], 6),
+        "bo3_samples": iid_series_profile["best_of"]["3"]["games"],
+        "bo5_samples": iid_series_profile["best_of"]["5"]["games"],
+        "method": "iid_binomial", "temperature": 1.0,
+    }
+    if any(published_series.get(key) != value for key, value in expected_series_contract.items()):
+        failures.append("published series-validation contract does not match the rolling fixture")
+    if len(series_samples) < 100:
+        failures.append(f"series conversion audit has only {len(series_samples)} complete chronological samples")
+    if iid_series_profile["overall"]["brier"] >= single_series_profile["overall"]["brier"] - 0.003:
+        failures.append("IID BO3/BO5 conversion does not improve overall series Brier by at least 0.003")
+    for region in REGIONS:
+        release_region = iid_series_profile["regions"][region]
+        single_region = single_series_profile["regions"][region]
+        if release_region["games"] < 30:
+            failures.append(f"{region} series conversion audit has only {release_region['games']} complete samples")
+        if release_region["brier"] > single_region["brier"] + 0.002:
+            failures.append(f"IID BO3/BO5 conversion worsens {region} series Brier by more than 0.002")
+        if release_region["brier"] >= 0.25:
+            failures.append(f"{region} series conversion Brier {release_region['brier']:.3f} >= 0.25")
+    if stable_series_candidates:
+        failures.append("a series-temperature correction now dominates IID conversion across every region and future fold")
 
     for region in REGIONS:
         folds = {str(fold): confidence_calibration(regional_fold_rows[(region, fold)]) for fold in range(1, len(FOLDS) + 1)}
