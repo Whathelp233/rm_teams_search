@@ -71,14 +71,14 @@ CURRENT_COMPONENT_WEIGHTS = {
     "adaptability": {"side_floor": 0.10, "opponent_floor": 0.10, "strong_opponent_response": 0.15, "setback_response": 0.35, "rematch_improvement": 0.30},
 }
 RELEASE_DIMENSION_WEIGHTS = {
+    "南部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.15, "defense": 0.06, "resource": 0.14},
+    "东部赛区": DIMENSION_WEIGHTS,
+    "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.04, "resource": 0.20},
+}
+PREVIOUS_4_4_DIMENSION_WEIGHTS = {
     "南部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.15, "defense": 0.08},
     "东部赛区": DIMENSION_WEIGHTS,
     "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.05, "resource": 0.19},
-}
-PREVIOUS_4_2_DIMENSION_WEIGHTS = {
-    "南部赛区": DIMENSION_WEIGHTS,
-    "东部赛区": DIMENSION_WEIGHTS,
-    "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.08, "resource": 0.16},
 }
 LEGACY_COMPONENT_WEIGHTS = {
     "firepower": {"clean_output": 0.30, "accuracy": 0.25, "kill_conversion": 0.25, "pressure_uptime": 0.20},
@@ -345,8 +345,11 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
     failures = []
+    for region, weights in RELEASE_DIMENSION_WEIGHTS.items():
+        if not math.isclose(sum(weights.values()), 1.0, abs_tol=1e-12):
+            failures.append(f"{region} matchup dimension weights do not sum to one")
     for dimension, weights in CURRENT_COMPONENT_WEIGHTS.items():
         errors = [
             abs(sum(record["component_diff"][dimension][component] * weight for component, weight in weights.items()) - record["dimension_diff"][dimension])
@@ -435,6 +438,68 @@ def main():
     }
     if passing_perturbations:
         failures.append("a component-weight transfer now dominates the release in all region-fold tests; recalibration is required")
+
+    # A dimension can remain useful as an explanatory score even when it adds
+    # little independent probability information beside correlated dimensions.
+    # Publish both its standalone direction and probability quality by future
+    # time fold, so a visually plausible but temporally unstable signal cannot
+    # silently gain matchup weight.
+    for region in REGIONS:
+        report["dimension_validity"][region] = {}
+        regional_records = [record for record in records if record["region"] == region]
+        for dimension in DIMENSION_WEIGHTS:
+            by_fold = defaultdict(list)
+            signed_margins = defaultdict(list)
+            for record in regional_records:
+                difference = record["dimension_diff"][dimension]
+                by_fold[record["fold"]].append((probability(difference, 0.0, region, record.get("stage")), record["won"]))
+                signed_margins[record["fold"]].append(difference if record["won"] else -difference)
+            combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
+            combined_margins = [value for fold in range(1, len(FOLDS) + 1) for value in signed_margins[fold]]
+            report["dimension_validity"][region][dimension] = {
+                "overall": {**metrics(combined), "winner_signed_margin": sum(combined_margins) / len(combined_margins)},
+                "folds": {
+                    str(fold): {
+                        **metrics(by_fold[fold]),
+                        "winner_signed_margin": sum(signed_margins[fold]) / len(signed_margins[fold]),
+                    }
+                    for fold in range(1, len(FOLDS) + 1)
+                },
+            }
+
+    selected_transfers = {
+        "南部赛区": {"donor": "defense", "receiver": "resource", "shift": 0.02},
+        "北部赛区": {"donor": "spatial", "receiver": "resource", "shift": 0.01},
+    }
+    for region, transfer in selected_transfers.items():
+        baseline_weights = PREVIOUS_4_4_DIMENSION_WEIGHTS[region]
+        candidate_weights = RELEASE_DIMENSION_WEIGHTS[region]
+        profiles = {}
+        for name, weights in (("previous_4_4", baseline_weights), ("release_4_5", candidate_weights)):
+            by_fold = defaultdict(list)
+            for record in records:
+                if record["region"] != region:
+                    continue
+                tactical_diff = sum(record["dimension_diff"][key] * weight for key, weight in weights.items())
+                result_weight = release_result_weight(region)
+                difference = (1 - result_weight) * tactical_diff + result_weight * record["result_diff"]
+                by_fold[record["fold"]].append((probability(difference, 0.0, region, record.get("stage")), record["won"]))
+            combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
+            profiles[name] = {
+                "weights": weights,
+                "overall": metrics(combined),
+                "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
+            }
+        previous, release = profiles["previous_4_4"], profiles["release_4_5"]
+        report["dimension_weight_transfer_validation"][region] = {"transfer": transfer, **profiles}
+        if release["overall"]["brier"] >= previous["overall"]["brier"] - 0.0003:
+            failures.append(f"{region} selected dimension transfer does not improve overall chronological Brier by at least 0.0003")
+        for fold in range(1, len(FOLDS) + 1):
+            key = str(fold)
+            if release["folds"][key]["brier"] >= previous["folds"][key]["brier"]:
+                failures.append(f"{region} selected dimension transfer does not improve fold {fold} chronological Brier")
+            if release["folds"][key]["accuracy"] < previous["folds"][key]["accuracy"]:
+                failures.append(f"{region} selected dimension transfer reduces fold {fold} chronological accuracy")
     for region in REGIONS:
         report["regions"][region] = {model: metrics(rows[model][region]) for model in rows}
         strength = report["regions"][region]["strength"]
@@ -720,11 +785,11 @@ def main():
         if south_release["folds"][key]["accuracy"] < south_uniform["folds"][key]["accuracy"]:
             failures.append(f"South stage-aware scale reduces fold {fold} chronological accuracy")
     for region in REGIONS:
-        profiles = {"previous_4_2": defaultdict(list), "release_4_3": defaultdict(list)}
+        profiles = {"previous_4_4": defaultdict(list), "release_4_5": defaultdict(list)}
         for record in records:
             if record["region"] != region:
                 continue
-            for name, weights in (("previous_4_2", PREVIOUS_4_2_DIMENSION_WEIGHTS[region]), ("release_4_3", RELEASE_DIMENSION_WEIGHTS[region])):
+            for name, weights in (("previous_4_4", PREVIOUS_4_4_DIMENSION_WEIGHTS[region]), ("release_4_5", RELEASE_DIMENSION_WEIGHTS[region])):
                 tactical_diff = sum(record["dimension_diff"][key] * weight for key, weight in weights.items())
                 result_weight = release_result_weight(region)
                 difference = (1 - result_weight) * tactical_diff + result_weight * record["result_diff"]
@@ -733,21 +798,21 @@ def main():
         for name, by_fold in profiles.items():
             combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
             report["regional_profile_validation"][region][name] = {
-                "weights": PREVIOUS_4_2_DIMENSION_WEIGHTS[region] if name == "previous_4_2" else RELEASE_DIMENSION_WEIGHTS[region],
+                "weights": PREVIOUS_4_4_DIMENSION_WEIGHTS[region] if name == "previous_4_4" else RELEASE_DIMENSION_WEIGHTS[region],
                 "overall": metrics(combined),
                 "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
             }
         if region in ("南部赛区", "北部赛区"):
-            previous = report["regional_profile_validation"][region]["previous_4_2"]
-            release_profile = report["regional_profile_validation"][region]["release_4_3"]
-            if release_profile["overall"]["brier"] >= previous["overall"]["brier"] - 0.001:
-                failures.append(f"{region} 4.3 profile does not improve overall chronological Brier by at least 0.001")
+            previous = report["regional_profile_validation"][region]["previous_4_4"]
+            release_profile = report["regional_profile_validation"][region]["release_4_5"]
+            if release_profile["overall"]["brier"] >= previous["overall"]["brier"] - 0.0003:
+                failures.append(f"{region} 4.5 profile does not improve overall chronological Brier by at least 0.0003")
             for fold in range(1, len(FOLDS) + 1):
                 key = str(fold)
                 if release_profile["folds"][key]["brier"] >= previous["folds"][key]["brier"]:
-                    failures.append(f"{region} 4.3 profile does not improve fold {fold} chronological Brier")
+                    failures.append(f"{region} 4.5 profile does not improve fold {fold} chronological Brier")
                 if release_profile["folds"][key]["accuracy"] < previous["folds"][key]["accuracy"]:
-                    failures.append(f"{region} 4.3 profile reduces fold {fold} chronological accuracy")
+                    failures.append(f"{region} 4.5 profile reduces fold {fold} chronological accuracy")
     north_profiles = {"global": defaultdict(list), "release": defaultdict(list)}
     for record in records:
         if record["region"] != "北部赛区":

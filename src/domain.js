@@ -71,25 +71,26 @@ const tacticalWeights = {
 const southMatchupWeights = {
   ...tacticalWeights,
   spatial: .15,
-  defense: .08,
+  defense: .06,
+  resource: .14,
 }
 
 const northMatchupWeights = {
   ...tacticalWeights,
-  spatial: .05,
-  resource: .19,
+  spatial: .04,
+  resource: .20,
 }
 
 const regionalMatchupWeights = { 南部赛区: southMatchupWeights, 东部赛区: tacticalWeights, 北部赛区: northMatchupWeights }
 const regionalMatchupLabels = {
-  南部赛区: '南部赛区校准（火力8·目标56·空间15·防守8·资源12·适应1）',
-  北部赛区: '北部赛区校准（火力8·目标56·空间5·防守11·资源19·适应1）',
+  南部赛区: '南部赛区校准（火力8·目标56·空间15·防守6·资源14·适应1）',
+  北部赛区: '北部赛区校准（火力8·目标56·空间4·防守11·资源20·适应1）',
 }
 
 const matchupUncertainty = {
-  南部赛区: { margin: 13, foldEcePct: 12.3 },
+  南部赛区: { margin: 13, foldEcePct: 12.2 },
   东部赛区: { margin: 13, foldEcePct: 12.2 },
-  北部赛区: { margin: 12, foldEcePct: 7.5 },
+  北部赛区: { margin: 12, foldEcePct: 7.2 },
 }
 
 function finite(value, fallback = 0) {

@@ -12,9 +12,9 @@ test('all published teams use complete score schema 4.0', () => {
   assert.equal(index.data_version, 'score-4.0.0')
   assert.equal(index.teams.length, 96)
   assert.deepEqual(index.matchup_validation, {
-    model_version: 'matchup-4.4.0',
-    game: { samples: 276, brier: .212452, accuracy: .684783 },
-    series: { samples: 112, brier: .181564, accuracy: .758929, ece: .049078, bo3_samples: 106, bo5_samples: 6, method: 'iid_binomial', temperature: 1 },
+    model_version: 'matchup-4.5.0',
+    game: { samples: 276, brier: .212041, accuracy: .684783 },
+    series: { samples: 112, brier: .181003, accuracy: .758929, ece: .052797, bo3_samples: 106, bo5_samples: 6, method: 'iid_binomial', temperature: 1 },
     bo5_data_limited: true,
   })
   const dimensions = ['firepower', 'objective', 'spatial', 'defense', 'resource', 'adaptability']
@@ -58,18 +58,18 @@ test('all published teams use complete score schema 4.0', () => {
     assert.ok(Math.abs(teamStrength(team) - team.strength_analysis.score) < .15, listing.team)
     assert.equal(team.strength_analysis.tactical_weight, 1, listing.team)
     assert.equal(team.strength_analysis.result_weight, 0, listing.team)
-    assert.equal(team.strength_analysis.matchup_model_version, '4.4.0', listing.team)
+    assert.equal(team.strength_analysis.matchup_model_version, '4.5.0', listing.team)
     assert.deepEqual(team.strength_analysis.matchup_result_weights, { 南部赛区: 0, 东部赛区: .1, 北部赛区: 0, 跨赛区: 0 }, listing.team)
     assert.deepEqual(team.strength_analysis.matchup_scales, { 南部赛区: 10, 东部赛区: 10, 北部赛区: 21, 跨赛区: 22 }, listing.team)
     assert.deepEqual(team.strength_analysis.matchup_stage_scale_multipliers, { 南部赛区: { 小组赛: 1, 淘汰赛: .8 }, 东部赛区: { 小组赛: 1, 淘汰赛: 1 }, 北部赛区: { 小组赛: 1, 淘汰赛: 1 } }, listing.team)
     assert.deepEqual(team.strength_analysis.matchup_gap_scale_multipliers, { 南部赛区: { threshold: 10, below: 1, at_or_above: .8 }, 东部赛区: { threshold: 10, below: 1, at_or_above: 1 }, 北部赛区: { threshold: 10, below: 1, at_or_above: 1 } }, listing.team)
     assert.deepEqual(team.strength_analysis.matchup_uncertainty_floor_pct, { 南部赛区: 13, 东部赛区: 13, 北部赛区: 12, 跨赛区: 15 }, listing.team)
-    assert.deepEqual(team.strength_analysis.matchup_mean_fold_ece_pct, { 南部赛区: 12.3, 东部赛区: 12.2, 北部赛区: 7.5, 跨赛区: null }, listing.team)
+    assert.deepEqual(team.strength_analysis.matchup_mean_fold_ece_pct, { 南部赛区: 12.2, 东部赛区: 12.2, 北部赛区: 7.2, 跨赛区: null }, listing.team)
     assert.deepEqual(team.strength_analysis.matchup_dimension_weights, {
       全国统一: tacticalWeights,
-      南部赛区: { ...tacticalWeights, spatial: .15, defense: .08 },
+      南部赛区: { ...tacticalWeights, spatial: .15, defense: .06, resource: .14 },
       东部赛区: tacticalWeights,
-      北部赛区: { ...tacticalWeights, spatial: .05, resource: .19 },
+      北部赛区: { ...tacticalWeights, spatial: .04, resource: .20 },
     }, listing.team)
     assert.equal(team.score_confidence.enters_score, false, listing.team)
     assert.equal(team.opponent_score_analysis.enters_strength, false, listing.team)
