@@ -14,6 +14,11 @@ class TacticalProfileTest(unittest.TestCase):
         self.assertEqual(tactics.own_point(25, 12, "蓝"), (3, 3))
         self.assertEqual(tactics.own_point(3, 3, "红"), (3, 3))
 
+    def test_lane_names_use_field_landmarks_instead_of_coordinates(self):
+        self.assertEqual(tactics.lane_zone(2), "公路区与公路隧道侧")
+        self.assertEqual(tactics.lane_zone(7.5), "中央高地正面")
+        self.assertEqual(tactics.lane_zone(13), "梯形高地与相邻隧道侧")
+
     def test_wilson_interval_contains_observed_rate(self):
         low, high = tactics.wilson(8, 10)
         self.assertLess(low, .8)
@@ -30,4 +35,3 @@ class TacticalProfileTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -66,7 +66,11 @@ def depth_zone(x):
 
 
 def lane_zone(y):
-    return "低Y通道" if y < 5 else "中Y通道" if y < 10 else "高Y通道"
+    if y < 5:
+        return "公路区与公路隧道侧"
+    if y < 10:
+        return "中央高地正面"
+    return "梯形高地与相邻隧道侧"
 
 
 def event_second(detail, game_id, event_type):
