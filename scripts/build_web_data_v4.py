@@ -41,6 +41,7 @@ def main() -> None:
             "dimension_confidence": detail.get("dimension_confidence"),
             "placement": detail.get("placement"),
             "overall_rank": detail.get("overall_rank"),
+            "rank_stability": detail.get("rank_stability"),
         }
         write(TARGET / "teams" / listing["slug"] / "overview.json", overview)
         teams.append(listing)
@@ -50,6 +51,7 @@ def main() -> None:
         "revision": index.get("data_version", index.get("schema_version")),
         "coordinate_notice": index.get("coordinate_notice"),
         "scoring_notice": index.get("scoring_notice"),
+        "rank_stability_method": index.get("rank_stability_method"),
         "teams": teams,
     }
     write(TARGET / "catalog.json", catalog)

@@ -8,9 +8,14 @@ const readJson = path => JSON.parse(readFileSync(new URL(path, import.meta.url),
 
 test('all published teams use complete score schema 4.0', () => {
   const index = readJson('../public/data/index.json')
+  const rankFixture = readJson('./fixtures/rank_stability.json')
   assert.equal(index.schema_version, '4.0.0')
   assert.equal(index.data_version, 'score-4.0.0')
   assert.equal(index.teams.length, 96)
+  assert.equal(index.rank_stability_method.schema_version, 'rank-stability-1.0.0')
+  assert.equal(index.rank_stability_method.blocks_per_region, 10)
+  assert.deepEqual(index.rank_stability_method.series_per_region, { 南部赛区: 88, 东部赛区: 88, 北部赛区: 90 })
+  assert.match(index.rank_stability_method.interpretation, /不是概率置信区间/)
   assert.deepEqual(index.matchup_validation, {
     model_version: 'matchup-4.6.0',
     game: { samples: 276, brier: .211341, accuracy: .684783 },
@@ -34,6 +39,16 @@ test('all published teams use complete score schema 4.0', () => {
     assert.equal(team.data_version, 'score-4.0.0', listing.team)
     assert.equal('consistency_analysis' in team, false, listing.team)
     assert.equal(team.overall_rank, listing.overall_rank, listing.team)
+    assert.deepEqual(team.rank_stability, listing.rank_stability, listing.team)
+    const rankEvidence = rankFixture.teams[listing.team]
+    assert.equal(team.rank_stability.region_rank, rankEvidence.base_region_rank, listing.team)
+    assert.deepEqual(team.rank_stability.region_rank_range, rankEvidence.region_rank_interval, listing.team)
+    assert.deepEqual(team.rank_stability.strength_range, rankEvidence.strength_interval, listing.team)
+    assert.equal(team.rank_stability.samples, 10, listing.team)
+    assert.ok(team.rank_stability.region_rank_range[0] <= team.rank_stability.region_rank, listing.team)
+    assert.ok(team.rank_stability.region_rank <= team.rank_stability.region_rank_range[1], listing.team)
+    assert.ok(team.rank_stability.strength_range[0] <= team.strength_analysis.score, listing.team)
+    assert.ok(team.strength_analysis.score <= team.rank_stability.strength_range[1], listing.team)
     assert.deepEqual(team.strength_analysis.tactical_dimension_weights, tacticalWeights, listing.team)
     assert.equal(team.strength_analysis.victory_rule_alignment.direct_dimension_weight, .75, listing.team)
     assert.equal(team.strength_analysis.victory_rule_alignment.enabling_dimension_weight, .25, listing.team)
