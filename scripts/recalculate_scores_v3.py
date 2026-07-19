@@ -731,8 +731,13 @@ def main():
             "raw_win_rate_pct": rounded(100.0 * sum(bool(match.get("won")) for match in payload["matches"]) / max(1, len(payload["matches"]))),
             "opponent_adjustment": "result_score is estimated jointly from every opponent and red/blue side; transparent opponent score is audit evidence and is not added twice",
             "tactical_weight": 1.0, "result_weight": 0.0,
+            "matchup_model_version": "4.1.0",
             "matchup_result_weights": {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0, "跨赛区": 0.0},
-            "matchup_scales": {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 23.0, "跨赛区": 22.0},
+            "matchup_scales": {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0, "跨赛区": 22.0},
+            "matchup_dimension_weights": {
+                "全国统一": DIMENSION_WEIGHTS,
+                "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.08, "resource": 0.16},
+            },
             "tactical_dimension_weights": DIMENSION_WEIGHTS,
             "victory_rule_alignment": {
                 "source": "RMUC 2026比赛规则手册V2.0.1 第5.8节",
@@ -740,7 +745,7 @@ def main():
                 "direct_dimension_weight": 0.75,
                 "enabling_dimension_weight": 0.25,
             },
-            "model": "rule-aligned tactical composite; rolling-origin matchup calibration uses 10% regularized Bradley-Terry only for same-region East predictions",
+            "model": "rule-aligned tactical composite; rolling-origin matchup calibration uses 10% regularized Bradley-Terry for East and a lower-spatial/higher-resource tactical profile for North",
             "red_side_intercept": rounded(side_bias, 3),
         }
         listing = listings[team]

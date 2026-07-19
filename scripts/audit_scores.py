@@ -163,6 +163,7 @@ def main():
     games = {}
     strengths = {team["team"]: team["strength_analysis"]["score"] for team in teams}
     results = {team["team"]: team["strength_analysis"]["result_score"] for team in teams}
+    payload_by_team = {team["team"]: team for team in teams}
     for team in teams:
         for match in team["matches"]:
             games.setdefault(match["game_id"], (team["team"], match["opponent"], bool(match["won"]), team["summary"]["region"]))
@@ -174,9 +175,15 @@ def main():
             if region != "全部" and game_region != region:
                 continue
             result_weight = 0.10 if game_region == "东部赛区" else 0.0
-            scale = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 23.0}[game_region]
-            primary_model = (1.0 - result_weight) * strengths[primary] + result_weight * results[primary]
-            opponent_model = (1.0 - result_weight) * strengths[opponent] + result_weight * results[opponent]
+            scale = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0}[game_region]
+            if game_region == "北部赛区":
+                weights = {**expected_dimension_weights, "spatial": 0.08, "resource": 0.16}
+                primary_tactical = sum(payload_by_team[primary]["scores"][key] * weight for key, weight in weights.items())
+                opponent_tactical = sum(payload_by_team[opponent]["scores"][key] * weight for key, weight in weights.items())
+            else:
+                primary_tactical, opponent_tactical = strengths[primary], strengths[opponent]
+            primary_model = (1.0 - result_weight) * primary_tactical + result_weight * results[primary]
+            opponent_model = (1.0 - result_weight) * opponent_tactical + result_weight * results[opponent]
             probability = 1.0 / (1.0 + math.exp(-(primary_model - opponent_model) / scale))
             probabilities.append(probability)
             outcomes.append(float(won))

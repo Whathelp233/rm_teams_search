@@ -68,6 +68,12 @@ const tacticalWeights = {
   adaptability: .01,
 }
 
+const northMatchupWeights = {
+  ...tacticalWeights,
+  spatial: .08,
+  resource: .16,
+}
+
 function finite(value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) ? number : fallback
@@ -266,13 +272,20 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
   const primaryRegion = primary?.summary?.region || primary?.region
   const opponentRegion = opponent?.summary?.region || opponent?.region
   const sameRegion = primaryRegion === opponentRegion
+  const dimensionWeights = sameRegion && primaryRegion === '北部赛区' ? northMatchupWeights : tacticalWeights
+  const weightProfile = sameRegion && primaryRegion === '北部赛区' ? '北部赛区校准' : '全国统一六维'
   const resultWeight = sameRegion && primaryRegion === '东部赛区' ? 0.10 : 0
   const primaryResult = finite(primary?.strength_analysis?.result_score, 50)
   const opponentResult = finite(opponent?.strength_analysis?.result_score, 50)
-  const primaryModelScore = primaryStrength * (1 - resultWeight) + primaryResult * resultWeight
-  const opponentModelScore = opponentStrength * (1 - resultWeight) + opponentResult * resultWeight
+  const tacticalModelScore = team => Object.entries(dimensionWeights).reduce(
+    (total, [key, weight]) => total + finite(team?.scores?.[key], 50) * weight, 0,
+  )
+  const primaryTacticalModel = weightProfile === '北部赛区校准' ? tacticalModelScore(primary) : primaryStrength
+  const opponentTacticalModel = weightProfile === '北部赛区校准' ? tacticalModelScore(opponent) : opponentStrength
+  const primaryModelScore = primaryTacticalModel * (1 - resultWeight) + primaryResult * resultWeight
+  const opponentModelScore = opponentTacticalModel * (1 - resultWeight) + opponentResult * resultWeight
   const regionalScale = primaryRegion === opponentRegion
-    ? ({ 南部赛区: 10, 东部赛区: 10, 北部赛区: 23 }[primaryRegion] || 22)
+    ? ({ 南部赛区: 10, 东部赛区: 10, 北部赛区: 21 }[primaryRegion] || 22)
     : 22
   // Rolling-origin tests retain a small result correction only for East-region
   // matchups. Rankings stay tactical-only and cross-region estimates remain
@@ -285,8 +298,11 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
   const primaryPct = Math.round(probability * 1000) / 10
   const opponentPct = Math.round((100 - primaryPct) * 10) / 10
   const minimumSample = Math.min(finite(primary?.summary?.games), finite(opponent?.summary?.games))
-  const confidence = minimumSample >= 15 ? '较高' : minimumSample >= 10 ? '中' : '较低'
-  const margin = Math.max(8, 24 / Math.sqrt(Math.max(1, minimumSample)))
+  const confidence = !sameRegion ? '探索性'
+    : primaryRegion === '北部赛区' ? (minimumSample >= 10 ? '中' : '较低')
+      : minimumSample >= 15 ? '较高' : minimumSample >= 10 ? '中' : '较低'
+  const modelMargin = !sameRegion ? 15 : primaryRegion === '北部赛区' ? 12 : 8
+  const margin = Math.max(modelMargin, 24 / Math.sqrt(Math.max(1, minimumSample)))
   let verdict = '接近五五开'
   if (primaryPct >= 65) verdict = `${primary.team}明显占优`
   else if (primaryPct >= 55) verdict = `${primary.team}略占优`
@@ -301,6 +317,9 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
     opponentModelScore: Math.round(opponentModelScore * 10) / 10,
     resultWeight,
     scale: regionalScale,
+    weightProfile,
+    dimensionWeights,
+    modelMargin,
     h2hGames,
     h2hWins,
     h2hLosses: h2hGames - h2hWins,

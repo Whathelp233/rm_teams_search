@@ -52,8 +52,13 @@ test('all published teams use complete score schema 4.0', () => {
     assert.ok(Math.abs(teamStrength(team) - team.strength_analysis.score) < .15, listing.team)
     assert.equal(team.strength_analysis.tactical_weight, 1, listing.team)
     assert.equal(team.strength_analysis.result_weight, 0, listing.team)
+    assert.equal(team.strength_analysis.matchup_model_version, '4.1.0', listing.team)
     assert.deepEqual(team.strength_analysis.matchup_result_weights, { 南部赛区: 0, 东部赛区: .1, 北部赛区: 0, 跨赛区: 0 }, listing.team)
-    assert.deepEqual(team.strength_analysis.matchup_scales, { 南部赛区: 10, 东部赛区: 10, 北部赛区: 23, 跨赛区: 22 }, listing.team)
+    assert.deepEqual(team.strength_analysis.matchup_scales, { 南部赛区: 10, 东部赛区: 10, 北部赛区: 21, 跨赛区: 22 }, listing.team)
+    assert.deepEqual(team.strength_analysis.matchup_dimension_weights, {
+      全国统一: tacticalWeights,
+      北部赛区: { ...tacticalWeights, spatial: .08, resource: .16 },
+    }, listing.team)
     assert.equal(team.score_confidence.enters_score, false, listing.team)
     assert.equal(team.opponent_score_analysis.enters_strength, false, listing.team)
     assert.equal(team.opponent_score_analysis.direct_matches_excluded, true, listing.team)
