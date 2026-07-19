@@ -209,6 +209,20 @@ def residual_metrics(rows):
     }
 
 
+def favorite_metrics(rows):
+    summary = metrics(rows)
+    if not rows:
+        return {**summary, "mean_confidence": None, "observed_hit_rate": None, "residual": None}
+    mean_confidence = sum(row[0] for row in rows) / len(rows)
+    observed = sum(float(row[1]) for row in rows) / len(rows)
+    return {
+        **summary,
+        "mean_confidence": mean_confidence,
+        "observed_hit_rate": observed,
+        "residual": observed - mean_confidence,
+    }
+
+
 def series_probability(single_game_probability, best_of):
     wins_needed = best_of // 2 + 1
     return sum(
@@ -376,7 +390,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "regional_transfer_screen": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
     failures = []
     for region, weights in RELEASE_DIMENSION_WEIGHTS.items():
         if not math.isclose(sum(weights.values()), 1.0, abs_tol=1e-12):
@@ -598,6 +612,97 @@ def main():
         scope: {group: residual_metrics(group_rows) for group, group_rows in sorted(groups.items())}
         for scope, groups in stratified.items()
     }
+
+    # Primary-team orientation comes from the data index and is not a sporting
+    # concept.  Re-orient the same rows around the model favorite so residuals
+    # answer the useful question: how often did a stated confidence cash?
+    favorite_stratified = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    for record in records:
+        difference = release_strength_diff(record)
+        predicted = probability(difference, 0.0, record["region"], record.get("stage"))
+        favorite_is_primary = predicted >= 0.5
+        confidence = max(predicted, 1.0 - predicted)
+        correct = favorite_is_primary == bool(record["won"])
+        favorite_side = record["side"] if favorite_is_primary else ("蓝" if record["side"] == "红" else "红")
+        absolute_gap = abs(difference)
+        gap_bucket = "0–5" if absolute_gap < 5 else "5–10" if absolute_gap < 10 else "10–20" if absolute_gap < 20 else "20+"
+        for scope in ("全部", record["region"]):
+            for group in (
+                f"热门方阵营/{favorite_side}", f"赛段/{record['stage']}", f"强弱差/{gap_bucket}",
+            ):
+                favorite_stratified[scope][group][record["fold"]].append((confidence, correct))
+    report["favorite_stratified_calibration"] = {
+        scope: {
+            group: {
+                "overall": favorite_metrics([row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]),
+                "folds": {str(fold): favorite_metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
+            }
+            for group, by_fold in sorted(groups.items())
+        }
+        for scope, groups in favorite_stratified.items()
+    }
+
+    # Screen small, interpretable regional transfers. A candidate must improve
+    # every chronological fold without losing directional accuracy, then pass
+    # a paired series-cluster bootstrap before it can justify a release.
+    for region in ("东部赛区", "北部赛区"):
+        baseline_weights = RELEASE_DIMENSION_WEIGHTS[region]
+        baseline_by_fold = defaultdict(list)
+        for record in records:
+            if record["region"] != region:
+                continue
+            row = (probability(release_strength_diff(record), 0.0, region, record.get("stage")), record["won"])
+            baseline_by_fold[record["fold"]].append(row)
+        baseline_overall = metrics([row for fold in range(1, len(FOLDS) + 1) for row in baseline_by_fold[fold]])
+        baseline_folds = {str(fold): metrics(baseline_by_fold[fold]) for fold in range(1, len(FOLDS) + 1)}
+        stable = []
+        for source in DIMENSION_WEIGHTS:
+            for target in DIMENSION_WEIGHTS:
+                if source == target:
+                    continue
+                for points in range(1, 9):
+                    amount = points / 100.0
+                    if baseline_weights[source] + 1e-12 < amount:
+                        continue
+                    weights = dict(baseline_weights)
+                    weights[source] -= amount
+                    weights[target] += amount
+                    by_fold = defaultdict(list)
+                    for record in records:
+                        if record["region"] != region:
+                            continue
+                        tactical = sum(record["dimension_diff"][key] * weight for key, weight in weights.items())
+                        result_weight = release_result_weight(region)
+                        difference = (1 - result_weight) * tactical + result_weight * record["result_diff"]
+                        by_fold[record["fold"]].append((probability(difference, 0.0, region, record.get("stage")), record["won"]))
+                    folds = {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)}
+                    overall = metrics([row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]])
+                    brier_deltas = [folds[str(fold)]["brier"] - baseline_folds[str(fold)]["brier"] for fold in range(1, len(FOLDS) + 1)]
+                    accuracy_deltas = [folds[str(fold)]["accuracy"] - baseline_folds[str(fold)]["accuracy"] for fold in range(1, len(FOLDS) + 1)]
+                    if max(brier_deltas) <= 1e-12 and min(accuracy_deltas) >= -1e-12:
+                        stable.append({
+                            "move": f"{source}→{target} {amount:.2f}", "weights": weights,
+                            "overall": overall, "folds": folds,
+                            "overall_brier_delta": overall["brier"] - baseline_overall["brier"],
+                            "max_fold_brier_delta": max(brier_deltas),
+                            "min_fold_accuracy_delta": min(accuracy_deltas),
+                        })
+        stable.sort(key=lambda item: (item["overall_brier_delta"], item["max_fold_brier_delta"]))
+        best = stable[0] if stable else None
+        bootstrap = clustered_brier_delta(records, baseline_weights, best["weights"], region) if best else None
+        supported = bool(
+            best and best["overall_brier_delta"] <= -0.001 and
+            bootstrap["probability_candidate_improves"] >= 0.975 and
+            bootstrap["confidence_interval_95"][1] < 0
+        )
+        report["regional_transfer_screen"][region] = {
+            "baseline": {"weights": baseline_weights, "overall": baseline_overall, "folds": baseline_folds},
+            "stable_candidates": len(stable), "best_candidate": best,
+            "clustered_bootstrap": bootstrap, "statistically_supported": supported,
+            "decision": "review_for_release" if supported else "retain_release",
+        }
+        if supported:
+            failures.append(f"{region} has a statistically supported regional weight transfer; release review is required")
 
     def correction_profile(region, transform):
         by_fold = defaultdict(list)
