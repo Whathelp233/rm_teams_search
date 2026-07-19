@@ -195,6 +195,64 @@ def clustered_brier_delta(records, baseline_weights, candidate_weights, region, 
     }
 
 
+def clustered_probability_delta(records, region, baseline_probability, candidate_probability, iterations=20000):
+    """Paired Brier delta for arbitrary probability transforms, clustered by series."""
+    clusters = defaultdict(list)
+    for record in records:
+        if record["region"] != region:
+            continue
+        outcome = float(record["won"])
+        clusters[(record["fold"], record["match_no"])].append(
+            (candidate_probability(record) - outcome) ** 2 - (baseline_probability(record) - outcome) ** 2
+        )
+    values = list(clusters.values())
+    generator = random.Random(20260720)
+    samples = []
+    for _ in range(iterations):
+        draw = [generator.choice(values) for _ in values]
+        samples.append(sum(sum(cluster) for cluster in draw) / sum(len(cluster) for cluster in draw))
+    samples.sort()
+    return {
+        "clusters": len(values), "iterations": iterations,
+        "probability_candidate_improves": sum(value < 0 for value in samples) / iterations,
+        "confidence_interval_95": [samples[iterations // 40], samples[iterations - iterations // 40 - 1]],
+    }
+
+
+def clustered_favorite_side_delta(records, region, iterations=20000):
+    """Bootstrap red-minus-blue favorite calibration residual by series."""
+    clusters = defaultdict(lambda: defaultdict(list))
+    for record in records:
+        if record["region"] != region:
+            continue
+        difference = release_strength_diff(record)
+        predicted = probability(difference, 0.0, region, record.get("stage"))
+        favorite_is_primary = predicted >= 0.5
+        favorite_side = record["side"] if favorite_is_primary else ("蓝" if record["side"] == "红" else "红")
+        residual = float(favorite_is_primary == bool(record["won"])) - max(predicted, 1.0 - predicted)
+        clusters[favorite_side][(record["fold"], record["match_no"])].append(residual)
+    values = {side: list(by_series.values()) for side, by_series in clusters.items()}
+    observed = {
+        side: sum(sum(cluster) for cluster in side_values) / sum(len(cluster) for cluster in side_values)
+        for side, side_values in values.items()
+    }
+    generator = random.Random(20260720)
+    samples = []
+    for _ in range(iterations):
+        means = []
+        for side in ("红", "蓝"):
+            draw = [generator.choice(values[side]) for _ in values[side]]
+            means.append(sum(sum(cluster) for cluster in draw) / sum(len(cluster) for cluster in draw))
+        samples.append(means[0] - means[1])
+    samples.sort()
+    return {
+        "clusters": {side: len(side_values) for side, side_values in values.items()},
+        "iterations": iterations, "red_minus_blue_residual": observed["红"] - observed["蓝"],
+        "probability_red_residual_higher": sum(value > 0 for value in samples) / iterations,
+        "confidence_interval_95": [samples[iterations // 40], samples[iterations - iterations // 40 - 1]],
+    }
+
+
 def residual_metrics(rows):
     summary = metrics(rows)
     if not rows:
@@ -390,7 +448,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "regional_transfer_screen": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
     failures = []
     for region, weights in RELEASE_DIMENSION_WEIGHTS.items():
         if not math.isclose(sum(weights.values()), 1.0, abs_tol=1e-12):
@@ -641,6 +699,18 @@ def main():
         }
         for scope, groups in favorite_stratified.items()
     }
+    for region in REGIONS:
+        side_bootstrap = clustered_favorite_side_delta(records, region)
+        side_bootstrap["statistically_supported"] = (
+            side_bootstrap["probability_red_residual_higher"] >= 0.975 and
+            side_bootstrap["confidence_interval_95"][0] > 0
+        ) or (
+            side_bootstrap["probability_red_residual_higher"] <= 0.025 and
+            side_bootstrap["confidence_interval_95"][1] < 0
+        )
+        report["favorite_side_bootstrap"][region] = side_bootstrap
+        if side_bootstrap["statistically_supported"]:
+            failures.append(f"{region} has a statistically supported favorite-side calibration difference")
 
     # Screen small, interpretable regional transfers. A candidate must improve
     # every chronological fold without losing directional accuracy, then pass
@@ -729,6 +799,10 @@ def main():
             return correction_profile(region, lambda record, difference, scale: (
                 difference, scale * (value if record["stage"] == "淘汰赛" else 1.0)
             ))
+        if family == "near_tie_scale":
+            return correction_profile(region, lambda record, difference, scale: (
+                difference, scale * (value if abs(difference) < 5 else 1.0)
+            ))
         low_multiplier, high_multiplier = value
         return correction_profile(region, lambda record, difference, scale: (
             difference, scale * (low_multiplier if abs(difference) < 10 else high_multiplier)
@@ -737,6 +811,7 @@ def main():
     correction_grids = {
         "side_intercept": [step / 2 for step in range(-8, 9)],
         "elimination_scale": [step / 10 for step in range(7, 14)],
+        "near_tie_scale": [step / 10 for step in range(5, 16)],
         "segmented_scale": [(low / 10, high / 10) for low in range(8, 13) for high in range(8, 13)],
     }
     correction_report = {}
@@ -777,7 +852,40 @@ def main():
                 "best_by_worst_fold": candidates[:5],
             }
             if stable:
-                failures.append(f"{region} {family} has a stable structural correction; release calibration must be reviewed")
+                selected = stable[0]
+                value = selected["value"]
+                baseline_probability = lambda record, region=region: probability(
+                    release_strength_diff(record), 0.0, region, record.get("stage")
+                )
+                if family == "side_intercept":
+                    candidate_probability = lambda record, value=value, region=region: 1.0 / (1.0 + math.exp(-(
+                        release_strength_diff(record) + (value if record["side"] == "红" else -value)
+                    ) / release_scale(region, record.get("stage"), release_strength_diff(record))))
+                elif family == "elimination_scale":
+                    candidate_probability = lambda record, value=value, region=region: 1.0 / (1.0 + math.exp(-release_strength_diff(record) / (
+                        release_scale(region, record.get("stage"), release_strength_diff(record)) *
+                        (value if record["stage"] == "淘汰赛" else 1.0)
+                    )))
+                elif family == "near_tie_scale":
+                    candidate_probability = lambda record, value=value, region=region: 1.0 / (1.0 + math.exp(-release_strength_diff(record) / (
+                        release_scale(region, record.get("stage"), release_strength_diff(record)) *
+                        (value if abs(release_strength_diff(record)) < 5 else 1.0)
+                    )))
+                else:
+                    low_multiplier, high_multiplier = value
+                    candidate_probability = lambda record, low=low_multiplier, high=high_multiplier, region=region: 1.0 / (1.0 + math.exp(-release_strength_diff(record) / (
+                        release_scale(region, record.get("stage"), release_strength_diff(record)) *
+                        (low if abs(release_strength_diff(record)) < 10 else high)
+                    )))
+                bootstrap = clustered_probability_delta(records, region, baseline_probability, candidate_probability)
+                supported = (
+                    bootstrap["probability_candidate_improves"] >= 0.975 and
+                    bootstrap["confidence_interval_95"][1] < 0
+                )
+                region_report["families"][family]["clustered_bootstrap"] = bootstrap
+                region_report["families"][family]["statistically_supported"] = supported
+                if supported:
+                    failures.append(f"{region} {family} has a statistically supported structural correction")
         correction_report[region] = region_report
     report["structural_correction_validation"] = correction_report
 
@@ -1156,6 +1264,31 @@ def main():
             }
             for region in REGIONS
         }
+    for region in REGIONS:
+        report["dimension_clustered_ablation"][region] = {}
+        baseline_weights = release_dimension_weights(region)
+        for removed in DIMENSION_WEIGHTS:
+            candidate_weights = {key: value for key, value in baseline_weights.items() if key != removed}
+            total = sum(candidate_weights.values())
+            candidate_weights = {key: value / total for key, value in candidate_weights.items()}
+            bootstrap = clustered_brier_delta(records, baseline_weights, candidate_weights, region)
+            ablation_improves = (
+                bootstrap["probability_candidate_improves"] >= 0.975 and
+                bootstrap["confidence_interval_95"][1] < 0
+            )
+            dimension_supported = (
+                bootstrap["probability_candidate_improves"] <= 0.025 and
+                bootstrap["confidence_interval_95"][0] > 0
+            )
+            report["dimension_clustered_ablation"][region][removed] = {
+                **bootstrap, "ablation_statistically_improves": ablation_improves,
+                "dimension_independently_supported": dimension_supported,
+                "interpretation": "shared_or_limited_evidence" if not ablation_improves and not dimension_supported else (
+                    "review_removal" if ablation_improves else "independent_contribution"
+                ),
+            }
+            if ablation_improves:
+                failures.append(f"{region} {removed} ablation has a statistically supported Brier improvement")
     for result_weight in (0.0, 0.05, 0.10, 0.15, 0.20, 0.25):
         regional_best = {}
         combined_rows = []
