@@ -63,18 +63,28 @@ export function deriveDamageEffects(gameData) {
       const previous = previousRows.get(row[0]), damage = previous ? Number(previous[3]) - Number(row[3]) : 0
       if (!previous || damage <= 0 || penalties.has(`${Math.round(second)}:${row[0]}`)) continue
       const targetSide = robots[row[0]]?.side
-      const candidates = rows.filter(candidate => robots[candidate[0]]?.side !== targetSide && candidate[10] && (candidate[8] > 0 || candidate[9] > 0))
-        .sort((a, b) => Math.hypot(a[1] - row[1], a[2] - row[2]) - Math.hypot(b[1] - row[1], b[2] - row[2]))
+      const opponentFiring = rows.some(candidate => robots[candidate[0]]?.side !== targetSide && candidate[10] && (candidate[8] > 0 || candidate[9] > 0))
       const position = row[10] ? row : previous[10] ? previous : null
       if (!position) continue
-      const confidence = row[10] && candidates.length === 1 ? 'high' : row[10] ? 'medium' : 'low'
-      const source = candidates[0]
+      const confidence = row[10] && opponentFiring ? 'high' : row[10] ? 'medium' : 'low'
       effects.push({
         id: `${second}-${row[0]}`, second: Number(second), target: row[0], damage: Math.round(damage),
-        x: position[1], y: position[2], source: source ? { robot: source[0], x: source[1], y: source[2] } : null,
+        x: position[1], y: position[2],
         confidence,
-        basis: confidence === 'high' ? '血量下降且同秒仅一台敌方单位发弹' : confidence === 'medium' ? '血量下降已确认，伤害来源存在歧义' : '血量下降已确认，位置沿用上一有效帧',
+        basis: confidence === 'high' ? '扣血与受击位置同帧确认；同秒存在敌方发弹，但不关联射手' : confidence === 'medium' ? '扣血与受击位置同帧确认；未记录可关联发弹' : '扣血已确认，受击位置沿用上一有效帧',
       })
+    }
+  }
+  return effects
+}
+
+export function deriveShotEffects(gameData) {
+  const effects = []
+  for (const [second, rows] of gameData?.frames || []) {
+    for (const row of rows) {
+      const shots17 = Math.max(0, Number(row[8]) || 0), shots42 = Math.max(0, Number(row[9]) || 0)
+      if (!row[10] || (!shots17 && !shots42)) continue
+      effects.push({ id: `${second}-${row[0]}`, second: Number(second), robot: row[0], x: row[1], y: row[2], shots17, shots42 })
     }
   }
   return effects

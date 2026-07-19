@@ -7,7 +7,7 @@ import TacticDimensionCard from './components/TacticDimensionCard.vue'
 import TacticalPatternCard from './components/TacticalPatternCard.vue'
 import { aggregateHeatCells, densityOpacity, doubleEliminationNextPairings, doubleEliminationStandings, matchupEstimate, monteCarloTournament, officialToMap, predictedWinner, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, roleMetrics, seriesWinProbability, strengthGrade, summarizeDimensions, swissNextPairings, swissStandings, teamPerspectivePoint, teamStrength } from './domain.js'
 import { buildCounterPlans, visibleTacticalPatterns } from './tactics.js'
-import { activeDamageEffects as damageEffectsAt, deriveDamageEffects, interpolatedFrame, nativeFrameRate } from './replay.js'
+import { activeDamageEffects as effectsAt, deriveDamageEffects, deriveShotEffects, interpolatedFrame, nativeFrameRate } from './replay.js'
 
 const base = import.meta.env.BASE_URL
 const dataRevision = 'score-3.9.0-role-data-1.1.0-tournament-3.0.0-tactics-1.0.0'
@@ -15,7 +15,7 @@ const index = ref({ teams: [] }), dataManifest = ref(null), selected = ref(null)
 const teamTab = ref('overview'), density = ref(localStorage.getItem('rmuc-density') || 'comfortable'), filtersOpen = ref(false), methodologyOpen = ref(false), loadingTeam = ref(false), loadingHeat = ref(false)
 const heat = ref(null), heatSide = ref('全部'), heatRobot = ref('全部'), heatView = ref('actual'), heatFrom = ref(0), heatTo = ref(420), heatMaskOpacity = ref(.34)
 const gameData = ref(null), activeGame = ref(null), time = ref(0), playing = ref(false), speed = ref(1), tail = ref(20), mapMode = ref('raster'), routeView = ref('actual')
-const damageEffects = ref([])
+const damageEffects = ref([]), shotEffects = ref([])
 const visibleRobots = ref({}), compareSlug = ref(''), compareTeam = ref(null)
 const viewMode = ref('team'), roleCatalog = ref({ roles: [] }), selectedRoleSlug = ref('hero'), roleIndex = ref(null), roleTeam = ref(null)
 const roleRegion = ref('全部'), roleQuery = ref(''), roleMetric = ref('availability_pct'), activeRoleGameId = ref(null), roleTime = ref(0)
@@ -179,7 +179,8 @@ const methodologySections = computed(() => {
 const shownEvents = computed(() => (gameData.value?.events || []).filter(e => e.second <= time.value))
 const currentFrame = computed(() => interpolatedFrame(gameData.value?.frames, time.value))
 const replayNativeHz = computed(() => nativeFrameRate(gameData.value?.frames).toFixed(1))
-const activeDamage = computed(() => damageEffectsAt(damageEffects.value, time.value))
+const activeDamage = computed(() => effectsAt(damageEffects.value, time.value))
+const activeShots = computed(() => effectsAt(shotEffects.value, time.value, .6))
 const recentDamage = computed(() => damageEffects.value.filter(effect => effect.second <= time.value).slice(-12).reverse())
 const trails = computed(() => {
   if (!gameData.value) return []
@@ -201,10 +202,7 @@ function frameXY(row) {
   const point = routeView.value === 'own' ? teamPerspectivePoint(actual[0], actual[1], activeGame.value?.side) : actual
   return mapMode.value === 'vector' ? point : rasterMapPoint(point[0], point[1], gameData.value?.map || 'current')
 }
-function effectXY(effect, source = false) {
-  const point = source ? effect.source : effect
-  return frameXY([0, point.x, point.y])
-}
+function effectXY(effect) { return frameXY([0, effect.x, effect.y]) }
 function confidenceLabel(value) { return value === 'high' ? '高置信度' : value === 'medium' ? '中置信度' : '低置信度' }
 function routeMapTransform() {
   if (routeView.value !== 'own' || activeGame.value?.side !== '蓝') return ''
@@ -592,7 +590,7 @@ async function loadHeat() {
 }
 async function loadTeam(teamSlug) {
   teamController?.abort(); teamController = new AbortController()
-  playing.value = false; gameData.value = null; damageEffects.value = []; activeGame.value = null; heat.value = null; tacticalProfile.value = null; tacticalError.value = ''; loadingTeam.value = true; filtersOpen.value = false
+  playing.value = false; gameData.value = null; damageEffects.value = []; shotEffects.value = []; activeGame.value = null; heat.value = null; tacticalProfile.value = null; tacticalError.value = ''; loadingTeam.value = true; filtersOpen.value = false
   try {
     const overviewPath = resourcePath('team_overview', teamSlug) || `data/teams/${teamSlug}.json`
     const teamRes = await fetchData(overviewPath, { signal: teamController.signal })
@@ -613,7 +611,7 @@ async function loadTeam(teamSlug) {
 async function loadGame(game) {
   playing.value = false; activeGame.value = game
   const response = await fetchData(`data/games/${game.game_id}.json`); if (!response.ok) throw new Error('对局时间轴加载失败')
-  gameData.value = await response.json(); damageEffects.value = deriveDamageEffects(gameData.value); time.value = 0; visibleRobots.value = Object.fromEntries(gameData.value.robots.map((_, i) => [i, true]))
+  gameData.value = await response.json(); damageEffects.value = deriveDamageEffects(gameData.value); shotEffects.value = deriveShotEffects(gameData.value); time.value = 0; visibleRobots.value = Object.fromEntries(gameData.value.robots.map((_, i) => [i, true]))
 }
 async function openTacticalEvidence(gameId) {
   const match = selected.value?.matches?.find(item => item.game_id === gameId)
@@ -793,12 +791,12 @@ onBeforeUnmount(() => { document.documentElement.classList.remove('drawer-lock')
     <section v-if="teamTab==='map'" class="panel"><div class="section-head"><h2>秒级热力图</h2><span>{{heatView==='actual'?'实际阵营':'己方归一化'}}</span></div><div class="toolbar"><select v-model="heatView"><option value="actual">实际场地图</option><option value="canonical">己方归一化</option></select><select v-model="heatSide"><option>全部</option><option>红</option><option>蓝</option></select><select v-model="heatRobot"><option>全部</option><option>英雄</option><option>工程</option><option>步兵3</option><option>步兵4</option><option>空中</option><option>哨兵</option></select><label>从 <input type="number" v-model.number="heatFrom"></label><label>到 <input type="number" v-model.number="heatTo"></label><label>地图遮罩 <input type="range" v-model.number="heatMaskOpacity" min="0" max=".75" step=".05"></label></div><div class="heat-legend"><span>低</span><i></i><span>高</span><b>0.5m 网格</b><b>最高 {{maxHeat}} 车·秒</b></div><div v-if="loadingHeat" class="empty-state">正在加载该队地图数据…</div><HeatmapCanvas v-else-if="heat" :cells="renderedHeat" :image="`${base}maps/field-current.jpg`" :mask-opacity="heatMaskOpacity" :scale-x="heatPlacement.scaleX" :scale-y="heatPlacement.scaleY"/></section>
     <section v-if="teamTab==='matches'" class="panel"><div class="section-head"><h2>逐局时间轴</h2><span>{{selected.matches.length}} 局</span></div><div class="match-grid"><button v-for="m in selected.matches" :key="m.game_id" :class="{active:activeGame?.game_id===m.game_id}" @click="loadGame(m)"><b>{{m.won?'胜':'负'}} · {{m.opponent}}</b><span>{{m.rule_version}} · {{m.side}}方</span><small>局 {{m.game_id}} · {{fmtSecond(m.duration_sec)}}</small></button></div></section>
     <section v-if="teamTab==='matches' && gameData" class="panel timeline">
-      <div class="toolbar replay-toolbar"><button class="play" @click="togglePlay">{{playing?'暂停':'播放'}}</button><b>{{fmtSecond(time)}} / {{fmtSecond(gameData.game.duration_sec)}}</b><span class="replay-rate">原始 {{replayNativeHz}} Hz · 位置插值 ≤60 FPS</span><select v-model.number="speed"><option :value=".5">0.5×</option><option :value="1">1×</option><option :value="2">2×</option><option :value="4">4×</option></select><label>尾迹 <input type="number" v-model.number="tail" min="3" max="120"> 秒</label><select v-model="mapMode"><option value="raster">规则实场图</option><option value="vector">官方坐标简图</option></select><select v-model="routeView"><option value="actual">红左 / 蓝右</option><option value="own">己方视角</option></select></div>
+      <div class="toolbar replay-toolbar"><button class="play" @click="togglePlay">{{playing?'暂停':'播放'}}</button><b>{{fmtSecond(time)}} / {{fmtSecond(gameData.game.duration_sec)}}</b><span class="replay-rate">原始 {{replayNativeHz}} Hz · 位置插值 ≤60 FPS</span><select v-model.number="speed"><option :value=".5">0.5×</option><option :value="1">1×</option><option :value="2">2×</option><option :value="4">4×</option></select><label>移动尾迹 <input type="number" v-model.number="tail" min="3" max="120"> 秒</label><select v-model="mapMode"><option value="raster">规则实场图</option><option value="vector">官方坐标简图</option></select><select v-model="routeView"><option value="actual">红左 / 蓝右</option><option value="own">己方视角</option></select></div>
       <input class="scrubber" type="range" min="0" :max="gameData.game.duration_sec" step=".05" v-model.number="time">
-      <div class="damage-confidence-legend"><b>伤害效果</b><span class="high">高：唯一同秒发弹来源</span><span class="medium">中：扣血确认、来源有歧义</span><span class="low">低：沿用上一有效位置</span><small>判罚扣血已排除</small></div>
+      <div class="damage-confidence-legend"><b>发弹 / 扣血效果</b><span class="shot">发弹脉冲：位置与弹量事实</span><span class="high">高：扣血位置确认且同秒有敌方发弹</span><span class="medium">中：扣血位置确认、原因不明</span><span class="low">低：沿用上一有效位置</span><small>无枪口朝向数据，不绘制推定弹道；判罚扣血已排除</small></div>
       <svg class="field replay-field" viewBox="0 0 28 15"><image :href="`${base}maps/${mapFile}`" width="28" height="15" preserveAspectRatio="none" opacity=".72" :transform="routeMapTransform()"/><polyline v-for="trailItem in trails" :key="trailItem.i" :points="trailItem.points.map(p=>frameXY(p).join(',')).join(' ')" fill="none" :stroke="colors[trailItem.i%colors.length]" stroke-width=".09"/>
+        <g v-for="shot in activeShots" :key="shot.id" class="shot-effect"><circle :cx="effectXY(shot)[0]" :cy="effectXY(shot)[1]" r=".19"/><text :x="effectXY(shot)[0]+.2" :y="effectXY(shot)[1]+.33">{{shot.shots42?'42mm ×'+shot.shots42:'17mm ×'+shot.shots17}}</text></g>
         <g v-for="effect in activeDamage" :key="effect.id" :class="['damage-effect',effect.confidence]">
-          <line v-if="effect.source" :x1="effectXY(effect,true)[0]" :y1="effectXY(effect,true)[1]" :x2="effectXY(effect)[0]" :y2="effectXY(effect)[1]"/>
           <circle class="impact-wave" :cx="effectXY(effect)[0]" :cy="effectXY(effect)[1]" r=".2"/><circle class="impact-core" :cx="effectXY(effect)[0]" :cy="effectXY(effect)[1]" r=".13"/><text :x="effectXY(effect)[0]+.18" :y="effectXY(effect)[1]-.22">-{{effect.damage}}</text>
         </g>
         <g v-for="row in currentFrame" :key="row[0]" v-show="visibleRobots[row[0]]!==false"><circle :cx="frameXY(row)[0]" :cy="frameXY(row)[1]" r=".19" :fill="colors[row[0]%colors.length]" stroke="white" stroke-width=".04"/><rect class="hp-track" :x="frameXY(row)[0]-.28" :y="frameXY(row)[1]+.23" width=".56" height=".07"/><rect class="hp-value" :x="frameXY(row)[0]-.28" :y="frameXY(row)[1]+.23" :width=".56*Math.max(0,Math.min(1,row[3]/Math.max(1,row[4])))" height=".07"/><text :x="frameXY(row)[0]+.25" :y="frameXY(row)[1]" font-size=".32" fill="white">{{gameData.robots[row[0]].robot_type}}</text></g>
