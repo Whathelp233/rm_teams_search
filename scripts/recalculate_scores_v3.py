@@ -17,6 +17,8 @@ from collections import defaultdict
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[1]
+RANK_STABILITY_FIXTURE = ROOT / "test" / "fixtures" / "rank_stability.json"
 MOBILE_TYPES = {"英雄", "工程", "步兵3", "步兵4", "哨兵", "空中"}
 COMBAT_CATEGORIES = {"17mm", "42mm", "飞镖"}
 DIMENSION_WEIGHTS = {
@@ -687,6 +689,25 @@ def main():
     # in South/North. Keep BT as transparent schedule context, not a second score input.
     strength_scores = dict(tactical_scores)
     overall_ranks = {team: 1 + sum(strength_scores[other] > strength_scores[team] for other in teams) for team in teams}
+    rank_stability = {}
+    if not args.backtest:
+        fixture = json.loads(RANK_STABILITY_FIXTURE.read_text(encoding="utf-8"))
+        if fixture.get("score_version") != "score-4.0.0" or fixture.get("matchup_model_version") != "matchup-4.6.0":
+            raise ValueError("rank-stability fixture is stale for the published score/matchup model")
+        if set(fixture.get("teams", {})) != set(teams):
+            raise ValueError("rank-stability fixture does not cover exactly the published teams")
+        for team in teams:
+            evidence = fixture["teams"][team]
+            if evidence["base_global_rank"] != overall_ranks[team] or not math.isclose(
+                evidence["base_strength"], rounded(strength_scores[team]), abs_tol=1e-9
+            ):
+                raise ValueError(f"rank-stability fixture is stale for {team}")
+            rank_stability[team] = {
+                "region_rank": evidence["base_region_rank"],
+                "region_rank_range": evidence["region_rank_interval"],
+                "strength_range": evidence["strength_interval"],
+                "samples": len(evidence["rank_samples"]),
+            }
 
     index["schema_version"] = "4.0.0"
     index["data_version"] = "score-4.0.0"
@@ -699,6 +720,18 @@ def main():
         ],
     }
     index["scoring_notice"] = "六维4.0：按规则5.8胜负优先级设置权重先验；滚动时间窗回测选择六维战术事实作为综合强度，Bradley-Terry赛果与逐对手分作为独立赛程证据，不重复加分"
+    if not args.backtest:
+        index["rank_stability_method"] = {
+            "schema_version": fixture["schema_version"],
+            "method": "按赛区将系列赛依时间切为10组，每次删除一组并完整重跑六维评分",
+            "display": "赛区名次波动区间",
+            "interpretation": "敏感性范围，不是概率置信区间，也不进入综合强度或胜率计算",
+            "blocks_per_region": fixture["blocks_per_region"],
+            "series_per_region": {
+                region: sum(len(block) for block in blocks)
+                for region, blocks in fixture["series_blocks"].items()
+            },
+        }
     index["matchup_validation"] = {
         "model_version": "matchup-4.6.0",
         "game": {"samples": 276, "brier": 0.211341, "accuracy": 0.684783},
@@ -721,6 +754,10 @@ def main():
         payload["dimension_ranks"] = dimension_ranks[team]
         payload["dimension_confidence"] = dimension_confidence[team]
         payload["overall_rank"] = overall_ranks[team]
+        if not args.backtest:
+            payload["rank_stability"] = rank_stability[team]
+        else:
+            payload.pop("rank_stability", None)
         payload["placement"] = placements.get(team)
         for name, score in scores.items():
             payload["summary"][f"{name}_score"] = score
@@ -773,6 +810,10 @@ def main():
         listing["dimension_ranks"] = dimension_ranks[team]
         listing["dimension_confidence"] = dimension_confidence[team]
         listing["overall_rank"] = overall_ranks[team]
+        if not args.backtest:
+            listing["rank_stability"] = rank_stability[team]
+        else:
+            listing.pop("rank_stability", None)
         listing["placement"] = placements.get(team)
         compact_write(path, payload)
     compact_write(index_path, index)

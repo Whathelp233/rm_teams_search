@@ -5,6 +5,7 @@ test('default overview is lightweight and opens Guangdong University of Technolo
   page.on('request', request => requested.push(request.url()))
   await page.goto('/')
   await expect(page.getByRole('heading', { name: '广东工业大学' })).toBeVisible()
+  await expect(page.getByText('赛区 #9 · 重算范围 #7–#10 · 全局参考 #19')).toBeVisible()
   await expect(page.getByRole('button', { name: '总览' })).toHaveClass(/active/)
   expect(requested.some(url => url.includes('/heatmaps/'))).toBeFalsy()
   expect(requested.some(url => url.includes('/roles/hero/'))).toBeFalsy()
