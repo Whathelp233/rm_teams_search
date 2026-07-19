@@ -736,11 +736,13 @@ def main():
             "raw_win_rate_pct": rounded(100.0 * sum(bool(match.get("won")) for match in payload["matches"]) / max(1, len(payload["matches"]))),
             "opponent_adjustment": "result_score is estimated jointly from every opponent and red/blue side; transparent opponent score is audit evidence and is not added twice",
             "tactical_weight": 1.0, "result_weight": 0.0,
-            "matchup_model_version": "4.3.0",
+            "matchup_model_version": "4.4.0",
             "matchup_result_weights": {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0, "跨赛区": 0.0},
             "matchup_scales": {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0, "跨赛区": 22.0},
-            "matchup_uncertainty_floor_pct": {"南部赛区": 12.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0},
-            "matchup_mean_fold_ece_pct": {"南部赛区": 11.1, "东部赛区": 12.2, "北部赛区": 7.5, "跨赛区": None},
+            "matchup_stage_scale_multipliers": {"南部赛区": {"小组赛": 1.0, "淘汰赛": 0.8}, "东部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}, "北部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}},
+            "matchup_gap_scale_multipliers": {"南部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 0.8}, "东部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0}, "北部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0}},
+            "matchup_uncertainty_floor_pct": {"南部赛区": 13.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0},
+            "matchup_mean_fold_ece_pct": {"南部赛区": 12.3, "东部赛区": 12.2, "北部赛区": 7.5, "跨赛区": None},
             "matchup_dimension_weights": {
                 "全国统一": DIMENSION_WEIGHTS,
                 **MATCHUP_DIMENSION_WEIGHTS,
@@ -752,7 +754,7 @@ def main():
                 "direct_dimension_weight": 0.75,
                 "enabling_dimension_weight": 0.25,
             },
-            "model": "rule-aligned tactical composite; rolling-origin matchup calibration uses 10% regularized Bradley-Terry for East, region-specific tactical weights that improve every future fold for South and North, and fold-ECE uncertainty floors",
+            "model": "rule-aligned tactical composite; rolling-origin matchup calibration uses 10% regularized Bradley-Terry for East, region-specific tactical weights, South stage/gap scales, and fold-ECE uncertainty floors",
             "red_side_intercept": rounded(side_bias, 3),
         }
         listing = listings[team]

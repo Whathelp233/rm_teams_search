@@ -24,7 +24,22 @@ REGIONS = ("南部赛区", "东部赛区", "北部赛区")
 FOLDS = ((0.55, 0.70), (0.70, 0.85), (0.85, 1.00))
 RELEASE_RESULT_WEIGHTS = {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0}
 RELEASE_SCALES = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0}
-RELEASE_UNCERTAINTY_FLOORS = {"南部赛区": 12.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0}
+RELEASE_STAGE_SCALE_MULTIPLIERS = {
+    "南部赛区": {"小组赛": 1.0, "淘汰赛": 0.8},
+    "东部赛区": {"小组赛": 1.0, "淘汰赛": 1.0},
+    "北部赛区": {"小组赛": 1.0, "淘汰赛": 1.0},
+}
+RELEASE_GAP_SCALE_MULTIPLIERS = {
+    "南部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 0.8},
+    "东部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0},
+    "北部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0},
+}
+ELIMINATION_STARTS = {
+    "南部赛区": "2026-05-16 14:10:00",
+    "东部赛区": "2026-05-24 14:10:00",
+    "北部赛区": "2026-06-01 14:10:00",
+}
+RELEASE_UNCERTAINTY_FLOORS = {"南部赛区": 13.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0}
 RELEASE_3_8_BASELINE = {
     "overall": {"brier": 0.2271718878310605, "accuracy": 0.6413043478260869},
     "regions": {
@@ -77,9 +92,18 @@ WEIGHT_CANDIDATES = {
 }
 
 
-def probability(first, second, region):
-    scale = RELEASE_SCALES[region]
-    return 1.0 / (1.0 + math.exp(-(first - second) / scale))
+def release_scale(region, stage=None, difference=None):
+    gap_profile = RELEASE_GAP_SCALE_MULTIPLIERS[region]
+    gap_multiplier = 1.0 if difference is None else (
+        gap_profile["below"] if abs(difference) < gap_profile["threshold"] else gap_profile["at_or_above"]
+    )
+    return RELEASE_SCALES[region] * RELEASE_STAGE_SCALE_MULTIPLIERS[region].get(stage, 1.0) * gap_multiplier
+
+
+def probability(first, second, region, stage=None):
+    difference = first - second
+    scale = release_scale(region, stage, difference)
+    return 1.0 / (1.0 + math.exp(-difference / scale))
 
 
 def release_result_weight(region):
@@ -94,6 +118,19 @@ def release_tactical_diff(dimension_diff, region):
     return sum(dimension_diff[key] * weight for key, weight in release_dimension_weights(region).items())
 
 
+def release_strength_diff(record):
+    region = record["region"]
+    result_weight = release_result_weight(region)
+    return (
+        (1 - result_weight) * release_tactical_diff(record["dimension_diff"], region)
+        + result_weight * record["result_diff"]
+    )
+
+
+def match_stage(region, started_at):
+    return "淘汰赛" if started_at >= ELIMINATION_STARTS[region] else "小组赛"
+
+
 def reconstruct_dimension_diffs(record, component_weights):
     return {
         dimension: sum(record["component_diff"][dimension][component] * weight for component, weight in weights.items())
@@ -106,7 +143,7 @@ def component_probability(record, component_weights):
     tactical_diff = release_tactical_diff(reconstruct_dimension_diffs(record, component_weights), region)
     result_weight = release_result_weight(region)
     difference = (1 - result_weight) * tactical_diff + result_weight * record["result_diff"]
-    return probability(difference, 0.0, region)
+    return probability(difference, 0.0, region, record.get("stage"))
 
 
 def metrics(rows):
@@ -119,6 +156,20 @@ def metrics(rows):
         "brier": sum((p - y) ** 2 for p, y in zip(probabilities, outcomes)) / len(rows),
         "log_loss": -sum(y * math.log(p) + (1 - y) * math.log(1 - p) for p, y in zip(probabilities, outcomes)) / len(rows),
         "accuracy": sum((p >= 0.5) == bool(y) for p, y in zip(probabilities, outcomes)) / len(rows),
+    }
+
+
+def residual_metrics(rows):
+    summary = metrics(rows)
+    if not rows:
+        return {**summary, "mean_prediction": None, "observed_win_rate": None, "residual": None}
+    mean_prediction = sum(row[0] for row in rows) / len(rows)
+    observed = sum(float(row[1]) for row in rows) / len(rows)
+    return {
+        **summary,
+        "mean_prediction": mean_prediction,
+        "observed_win_rate": observed,
+        "residual": observed - mean_prediction,
     }
 
 
@@ -161,6 +212,8 @@ def load_source():
             games.setdefault(match["game_id"], {
                 "game_id": match["game_id"], "region": match["region"], "started_at": match["started_at"],
                 "primary": payload["team"], "opponent": match["opponent"], "won": bool(match["won"]),
+                "side": match["side"], "match_no": match["match_no"], "round_no": match["round_no"],
+                "stage": match_stage(match["region"], match["started_at"]),
             })
     regional = {region: sorted((game for game in games.values() if game["region"] == region), key=lambda game: (game["started_at"], game["game_id"])) for region in REGIONS}
     return index, payloads, regional
@@ -220,6 +273,8 @@ def build_records():
                 ]
                 records.append({
                     "fold": fold_number, "region": game["region"], "won": game["won"],
+                    "side": game["side"], "stage": game["stage"],
+                    "match_no": game["match_no"], "round_no": game["round_no"],
                     "dimension_diff": {dimension: round(first["scores"][dimension] - second["scores"][dimension], 3) for dimension in DIMENSION_WEIGHTS},
                     "component_diff": {
                         dimension: {
@@ -242,11 +297,11 @@ def main():
         records = build_records()
         if args.write_fixture:
             FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-            FIXTURE.write_text(json.dumps({"schema_version": "4.0.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            FIXTURE.write_text(json.dumps({"schema_version": "4.1.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     else:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("schema_version") != "4.0.0":
-            raise SystemExit("rolling score fixture does not match score schema 4.0.0")
+        if fixture.get("schema_version") != "4.1.0":
+            raise SystemExit("rolling score fixture does not match score schema 4.1.0")
         records = fixture["records"]
 
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
@@ -261,7 +316,7 @@ def main():
         strength_diff = (1 - result_weight) * tactical_diff + result_weight * result_diff
         model_diffs = {"strength": strength_diff, "tactical": tactical_diff, "result": result_diff}
         for model, difference in model_diffs.items():
-            row = (probability(difference, 0.0, record["region"]), record["won"])
+            row = (probability(difference, 0.0, record["region"], record.get("stage")), record["won"])
             rows[model][record["region"]].append(row)
             if model == "strength":
                 fold_rows[record["fold"]].append(row)
@@ -272,7 +327,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "structural_correction_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
     failures = []
     for dimension, weights in CURRENT_COMPONENT_WEIGHTS.items():
         errors = [
@@ -373,13 +428,18 @@ def main():
     candidate_all = []
     candidate_rows_by_region = {}
     for region in REGIONS:
-        scale = RELEASE_SCALES[region]
         result_weight = release_result_weight(region)
         candidate_rows = [
-            (1.0 / (1.0 + math.exp(-((1 - result_weight) * release_tactical_diff(dimension_diff, region) + result_weight * result_diff) / scale)), won)
-            for dimension_diff, result_diff, won in observations[region]
+            (probability(release_strength_diff(record), 0.0, region, record.get("stage")), record["won"])
+            for record in records if record["region"] == region
         ]
-        report["candidate"][region] = {"result_weight": result_weight, "scale": scale, **metrics(candidate_rows)}
+        report["candidate"][region] = {
+            "result_weight": result_weight,
+            "base_scale": RELEASE_SCALES[region],
+            "stage_scale_multipliers": RELEASE_STAGE_SCALE_MULTIPLIERS[region],
+            "gap_scale_multipliers": RELEASE_GAP_SCALE_MULTIPLIERS[region],
+            **metrics(candidate_rows),
+        }
         candidate_rows_by_region[region] = candidate_rows
         candidate_all.extend(candidate_rows)
         if report["candidate"][region]["brier"] >= 0.25:
@@ -399,6 +459,105 @@ def main():
         threshold = 0.06 if region == "全部" else 0.10
         if calibration["ece"] >= threshold:
             failures.append(f"{region} confidence calibration ECE {calibration['ece']:.3f} >= {threshold:.2f}")
+
+    # Diagnose systematic residuals on facts that are known before a game:
+    # actual alliance colour, competition stage, and pre-game strength gap.
+    # These groups are diagnostic rather than extra score inputs; tiny groups
+    # are retained in the report but never used to justify a release change.
+    stratified = defaultdict(lambda: defaultdict(list))
+    for record in records:
+        difference = release_strength_diff(record)
+        predicted = probability(difference, 0.0, record["region"], record.get("stage"))
+        absolute_gap = abs(difference)
+        gap_bucket = "0–5" if absolute_gap < 5 else "5–10" if absolute_gap < 10 else "10–20" if absolute_gap < 20 else "20+"
+        row = (predicted, record["won"])
+        scopes = ("全部", record["region"])
+        for scope in scopes:
+            stratified[scope][f"红蓝方/{record['side']}"].append(row)
+            stratified[scope][f"赛段/{record['stage']}"].append(row)
+            stratified[scope][f"强弱差/{gap_bucket}"].append(row)
+    report["stratified_residuals"] = {
+        scope: {group: residual_metrics(group_rows) for group, group_rows in sorted(groups.items())}
+        for scope, groups in stratified.items()
+    }
+
+    def correction_profile(region, transform):
+        by_fold = defaultdict(list)
+        for record in records:
+            if record["region"] != region:
+                continue
+            release_difference = release_strength_diff(record)
+            difference, scale = transform(
+                record, release_difference, release_scale(region, record.get("stage"), release_difference)
+            )
+            by_fold[record["fold"]].append((1.0 / (1.0 + math.exp(-difference / scale)), record["won"]))
+        combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
+        return {
+            "overall": metrics(combined),
+            "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
+        }
+
+    def correction_candidate(region, family, value):
+        if family == "side_intercept":
+            return correction_profile(region, lambda record, difference, scale: (
+                difference + (value if record["side"] == "红" else -value), scale
+            ))
+        if family == "elimination_scale":
+            return correction_profile(region, lambda record, difference, scale: (
+                difference, scale * (value if record["stage"] == "淘汰赛" else 1.0)
+            ))
+        low_multiplier, high_multiplier = value
+        return correction_profile(region, lambda record, difference, scale: (
+            difference, scale * (low_multiplier if abs(difference) < 10 else high_multiplier)
+        ))
+
+    correction_grids = {
+        "side_intercept": [step / 2 for step in range(-8, 9)],
+        "elimination_scale": [step / 10 for step in range(7, 14)],
+        "segmented_scale": [(low / 10, high / 10) for low in range(8, 13) for high in range(8, 13)],
+    }
+    correction_report = {}
+    for region in REGIONS:
+        baseline_profile = correction_profile(region, lambda record, difference, scale: (difference, scale))
+        region_report = {"baseline": baseline_profile, "families": {}}
+        for family, values in correction_grids.items():
+            candidates = []
+            for value in values:
+                profile = correction_candidate(region, family, value)
+                brier_deltas = [
+                    profile["folds"][str(fold)]["brier"] - baseline_profile["folds"][str(fold)]["brier"]
+                    for fold in range(1, len(FOLDS) + 1)
+                ]
+                accuracy_deltas = [
+                    profile["folds"][str(fold)]["accuracy"] - baseline_profile["folds"][str(fold)]["accuracy"]
+                    for fold in range(1, len(FOLDS) + 1)
+                ]
+                candidates.append({
+                    "value": list(value) if isinstance(value, tuple) else value,
+                    "overall": profile["overall"],
+                    "folds": profile["folds"],
+                    "overall_brier_delta": profile["overall"]["brier"] - baseline_profile["overall"]["brier"],
+                    "max_fold_brier_delta": max(brier_deltas),
+                    "min_fold_accuracy_delta": min(accuracy_deltas),
+                })
+            candidates.sort(key=lambda item: (item["max_fold_brier_delta"], item["overall_brier_delta"]))
+            stable = [
+                candidate for candidate in candidates
+                if candidate["max_fold_brier_delta"] <= 1e-12
+                and candidate["min_fold_accuracy_delta"] >= -1e-12
+                and candidate["overall_brier_delta"] <= -0.001
+            ]
+            region_report["families"][family] = {
+                "selection": "release",
+                "minimum_overall_brier_gain": 0.001,
+                "stable_candidates": stable,
+                "best_by_worst_fold": candidates[:5],
+            }
+            if stable:
+                failures.append(f"{region} {family} has a stable structural correction; release calibration must be reviewed")
+        correction_report[region] = region_report
+    report["structural_correction_validation"] = correction_report
+
     for region in REGIONS:
         folds = {str(fold): confidence_calibration(regional_fold_rows[(region, fold)]) for fold in range(1, len(FOLDS) + 1)}
         mean_ece_pct = 100.0 * sum(item["ece"] for item in folds.values()) / len(folds)
@@ -409,25 +568,29 @@ def main():
         }
         if RELEASE_UNCERTAINTY_FLOORS[region] + 1e-9 < math.ceil(mean_ece_pct):
             failures.append(f"{region} uncertainty floor is narrower than mean rolling-fold ECE")
-    south_scale_rows = {"scale_8": defaultdict(list), "release_scale_10": defaultdict(list)}
+    south_scale_rows = {"uniform_scale_10": defaultdict(list), "release_stage_and_gap_scale": defaultdict(list)}
     for record in records:
         if record["region"] != "南部赛区":
             continue
         difference = release_tactical_diff(record["dimension_diff"], record["region"])
-        south_scale_rows["scale_8"][record["fold"]].append((1.0 / (1.0 + math.exp(-difference / 8.0)), record["won"]))
-        south_scale_rows["release_scale_10"][record["fold"]].append((1.0 / (1.0 + math.exp(-difference / 10.0)), record["won"]))
+        south_scale_rows["uniform_scale_10"][record["fold"]].append((1.0 / (1.0 + math.exp(-difference / 10.0)), record["won"]))
+        south_scale_rows["release_stage_and_gap_scale"][record["fold"]].append((probability(difference, 0.0, record["region"], record.get("stage")), record["won"]))
     for profile, by_fold in south_scale_rows.items():
         combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
         report["south_scale_validation"][profile] = {
             "overall": metrics(combined),
             "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
         }
-    if all(
-        report["south_scale_validation"]["scale_8"]["folds"][str(fold)]["brier"]
-        <= report["south_scale_validation"]["release_scale_10"]["folds"][str(fold)]["brier"]
-        for fold in range(1, len(FOLDS) + 1)
-    ):
-        failures.append("South scale 8 now dominates release scale 10 in every rolling fold; recalibration is required")
+    south_uniform = report["south_scale_validation"]["uniform_scale_10"]
+    south_release = report["south_scale_validation"]["release_stage_and_gap_scale"]
+    if south_release["overall"]["brier"] >= south_uniform["overall"]["brier"] - 0.001:
+        failures.append("South stage-aware scale does not improve overall chronological Brier by at least 0.001")
+    for fold in range(1, len(FOLDS) + 1):
+        key = str(fold)
+        if south_release["folds"][key]["brier"] > south_uniform["folds"][key]["brier"] + 1e-12:
+            failures.append(f"South stage-aware scale worsens fold {fold} chronological Brier")
+        if south_release["folds"][key]["accuracy"] < south_uniform["folds"][key]["accuracy"]:
+            failures.append(f"South stage-aware scale reduces fold {fold} chronological accuracy")
     for region in REGIONS:
         profiles = {"previous_4_2": defaultdict(list), "release_4_3": defaultdict(list)}
         for record in records:
@@ -437,7 +600,7 @@ def main():
                 tactical_diff = sum(record["dimension_diff"][key] * weight for key, weight in weights.items())
                 result_weight = release_result_weight(region)
                 difference = (1 - result_weight) * tactical_diff + result_weight * record["result_diff"]
-                profiles[name][record["fold"]].append((probability(difference, 0.0, region), record["won"]))
+                profiles[name][record["fold"]].append((probability(difference, 0.0, region, record.get("stage")), record["won"]))
         report["regional_profile_validation"][region] = {}
         for name, by_fold in profiles.items():
             combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
@@ -489,7 +652,7 @@ def main():
         dimension_diff, result_diff, region = record["dimension_diff"], record["result_diff"], record["region"]
         result_weight = release_result_weight(region)
         difference = (1 - result_weight) * release_tactical_diff(dimension_diff, region) + result_weight * result_diff
-        base_probability = probability(difference, 0.0, region)
+        base_probability = probability(difference, 0.0, region, record.get("stage"))
         games, wins = int(record.get("h2h_games", 0)), int(record.get("h2h_wins", 0))
         smoothed_rate = (wins + 1) / (games + 2)
         legacy_weight = min(0.30, games * 0.06)
@@ -527,7 +690,7 @@ def main():
                 + result_weight * record["result_diff"]
                 + coefficient * record["opponent_score_diff"]
             )
-            row = (probability(difference, 0.0, record["region"]), record["won"])
+            row = (probability(difference, 0.0, record["region"], record.get("stage")), record["won"])
             candidate_by_region[record["region"]].append(row)
             candidate_by_fold[record["fold"]].append(row)
         combined = [row for region in REGIONS for row in candidate_by_region[region]]
@@ -560,7 +723,7 @@ def main():
         for name, tactical_diff in (("score_4_0", current_tactical), ("score_3_8", legacy_tactical)):
             result_weight = release_result_weight(record["region"])
             difference = (1 - result_weight) * tactical_diff + result_weight * record["result_diff"]
-            row = (probability(difference, 0.0, record["region"]), record["won"])
+            row = (probability(difference, 0.0, record["region"], record.get("stage")), record["won"])
             component_models[name][record["region"]].append(row)
             component_folds[name][record["fold"]].append(row)
     for name in component_models:
@@ -598,12 +761,18 @@ def main():
         candidate_rows = []
         regional_metrics = {}
         for region in REGIONS:
-            scale = RELEASE_SCALES[region]
             result_weight = release_result_weight(region)
             weights = release_dimension_weights(region) if name == "current" else candidate_weights
             regional_rows = [
-                (1.0 / (1.0 + math.exp(-((1 - result_weight) * sum(dimension_diff[key] * weight for key, weight in weights.items()) + result_weight * result_diff) / scale)), won)
-                for dimension_diff, result_diff, won in observations[region]
+                (
+                    probability(
+                        (1 - result_weight) * sum(record["dimension_diff"][key] * weight for key, weight in weights.items())
+                        + result_weight * record["result_diff"],
+                        0.0, region, record.get("stage"),
+                    ),
+                    record["won"],
+                )
+                for record in records if record["region"] == region
             ]
             regional_metrics[region] = metrics(regional_rows)
             candidate_rows.extend(regional_rows)
@@ -625,11 +794,17 @@ def main():
             weights = {key: value for key, value in release_dimension_weights(region).items() if key != removed}
             total = sum(weights.values())
             weights = {key: value / total for key, value in weights.items()}
-            scale = RELEASE_SCALES[region]
             result_weight = release_result_weight(region)
             regional_rows = [
-                (1.0 / (1.0 + math.exp(-((1 - result_weight) * sum(dimension_diff[key] * weight for key, weight in weights.items()) + result_weight * result_diff) / scale)), won)
-                for dimension_diff, result_diff, won in observations[region]
+                (
+                    probability(
+                        (1 - result_weight) * sum(record["dimension_diff"][key] * weight for key, weight in weights.items())
+                        + result_weight * record["result_diff"],
+                        0.0, region, record.get("stage"),
+                    ),
+                    record["won"],
+                )
+                for record in records if record["region"] == region
             ]
             ablation_rows.extend(regional_rows)
             ablation_regions[region].extend(regional_rows)
@@ -638,7 +813,7 @@ def main():
                     continue
                 tactical_diff = sum(record["dimension_diff"][key] * weight for key, weight in weights.items())
                 difference = (1 - result_weight) * tactical_diff + result_weight * record["result_diff"]
-                ablation_folds[region][record["fold"]].append((probability(difference, 0.0, region), record["won"]))
+                ablation_folds[region][record["fold"]].append((probability(difference, 0.0, region, record.get("stage")), record["won"]))
         ablation_name = "all" if removed is None else f"without_{removed}"
         report["dimension_ablation"][ablation_name] = metrics(ablation_rows)
         report["dimension_ablation_by_region_fold"][ablation_name] = {

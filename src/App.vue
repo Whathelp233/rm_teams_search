@@ -10,14 +10,14 @@ import { buildCounterPlans, visibleTacticalPatterns } from './tactics.js'
 import { activeDamageEffects as effectsAt, deriveDamageEffects, deriveShotEffects, interpolatedFrame, nativeFrameRate, normalizeReplayData, teamFrameAt } from './replay.js'
 
 const base = import.meta.env.BASE_URL
-const dataRevision = 'score-4.0.0-matchup-4.3.0-role-data-1.1.0-replay-3.1.0-tournament-3.0.0-tactics-1.0.0'
+const dataRevision = 'score-4.0.0-matchup-4.4.0-role-data-1.1.0-replay-3.1.0-tournament-3.0.0-tactics-1.0.0'
 const index = ref({ teams: [] }), dataManifest = ref(null), selected = ref(null), query = ref(''), region = ref('全部'), error = ref('')
 const teamTab = ref('overview'), density = ref(localStorage.getItem('rmuc-density') || 'comfortable'), filtersOpen = ref(false), methodologyOpen = ref(false), loadingTeam = ref(false), loadingHeat = ref(false)
 const heat = ref(null), heatSide = ref('全部'), heatRobot = ref('全部'), heatView = ref('actual'), heatFrom = ref(0), heatTo = ref(420), heatMaskOpacity = ref(.34)
 const gameData = ref(null), activeGame = ref(null), time = ref(0), playing = ref(false), speed = ref(1), tail = ref(20), mapMode = ref('raster'), routeView = ref('actual')
 const damageEffects = ref([]), shotEffects = ref([])
 const replayEventFilter = ref('全部'), showLowConfidence = ref(false), selectedReplayRobot = ref(null), loadingGame = ref(false), gameError = ref('')
-const visibleRobots = ref({}), compareSlug = ref(''), compareTeam = ref(null)
+const visibleRobots = ref({}), compareSlug = ref(''), compareTeam = ref(null), compareStage = ref('小组赛')
 const viewMode = ref('team'), roleCatalog = ref({ roles: [] }), selectedRoleSlug = ref('hero'), roleIndex = ref(null), roleTeam = ref(null)
 const roleRegion = ref('全部'), roleQuery = ref(''), roleMetric = ref('availability_pct'), activeRoleGameId = ref(null), roleTime = ref(0)
 const tournamentConfig = ref(null), tournamentMode = ref('repechage'), tournamentTeams = ref({ repechage: [], finals: [] }), tournamentGroups = ref({ repechage: [[], []], finals: [[], []] }), tournamentRounds = ref({ repechage: { A: [], B: [] }, finals: { A: [], B: [] } }), finalsQualifiers = ref([null, null, null, null]), tournamentBusy = ref(false)
@@ -96,7 +96,7 @@ const aggregatedHeat = computed(() => aggregateHeatCells(filteredHeat.value, hea
 const maxHeat = computed(() => Math.max(1, ...aggregatedHeat.value.map(c => c.samples)))
 const renderedHeat = computed(() => aggregatedHeat.value.map(cell => ({ ...cell, opacity: heatOpacity(cell) })))
 const headToHead = computed(() => compareTeam.value ? selected.value.matches.filter(match => match.opponent === compareTeam.value.team) : [])
-const matchup = computed(() => compareTeam.value ? matchupEstimate(selected.value, compareTeam.value, headToHead.value) : null)
+const matchup = computed(() => compareTeam.value ? matchupEstimate(selected.value, compareTeam.value, headToHead.value, { stage: compareStage.value }) : null)
 const comparisonRows = computed(() => {
   if (!compareTeam.value || !matchup.value) return []
   const a = selected.value, b = compareTeam.value
@@ -449,7 +449,7 @@ function autoPlayoffRound(stageIndex) {
   stage.rounds[roundIndex].matches.forEach((match, matchIndex) => setPlayoffWinner(stageIndex, roundIndex, matchIndex, predictedWinner(match, tournamentPredictionMode.value)))
 }
 function tournamentMatch(first, second, bestOf = 3) {
-  const estimate = matchupEstimate(tournamentTeamMap.value.get(first), tournamentTeamMap.value.get(second))
+  const estimate = matchupEstimate(tournamentTeamMap.value.get(first), tournamentTeamMap.value.get(second), [], { stage: '淘汰赛' })
   const firstPct = seriesWinProbability(estimate.primaryPct, bestOf)
   return { first, second, firstPct, secondPct: Math.round((100 - firstPct) * 10) / 10, bestOf, winner: null }
 }
@@ -898,7 +898,7 @@ onBeforeUnmount(() => { document.documentElement.classList.remove('drawer-lock')
     </section>
     <section v-if="teamTab==='roles'" class="panel role-launcher"><div class="section-head"><h2>各兵种比赛数据</h2><span>事实 / 推定分列</span></div><div class="role-shortcuts"><button v-for="([key,label]) in roleShortcuts" :key="key" @click="openTeamRole(key)"><b>{{label}}</b><span>查看 {{selected.team}} 的{{label}}数据</span></button></div></section>
     <section v-if="teamTab==='discipline'" class="panel"><div class="section-head"><h2>黄牌 / 红牌</h2><span class="trust-badge">仅推定</span></div><div class="penalty-table"><div v-for="p in selected.penalty_incidents" :key="`${p.game_id}-${p.second}`"><b>局 {{p.game_id}} · {{fmtSecond(p.second)}} · {{p.incident_type}}</b><span>{{p.offender_type||'对象未知'}} · 扣血 {{p.penalty_damage}} · {{p.confidence}}置信<span v-if="p.inferred_red"> · 推定红牌</span></span></div><p v-if="!selected.penalty_incidents.length">该队样本中无可识别判罚事件。</p></div></section>
-    <section v-if="teamTab==='compare'" class="panel compare"><div class="section-head"><h2>双队对比与胜率</h2><span class="trust-badge">模型预测</span></div><select v-model="compareSlug"><option value="">选择另一支队伍</option><option v-for="t in index.teams.filter(t=>t.team!==selected.team)" :key="t.slug" :value="t.slug">{{t.team}}</option></select><template v-if="compareTeam && matchup"><div class="prediction"><div><span>{{selected.team}} 模型胜率</span><strong>{{matchup.primaryPct}}%</strong><small>估计区间 {{matchup.interval[0]}}%–{{matchup.interval[1]}}%</small></div><div class="verdict"><span>对局判定</span><strong>{{matchup.verdict}}</strong><small>置信度：{{matchup.confidence}} · {{matchup.weightProfile}}{{matchup.resultWeight?' + 东部赛果 10%':''}} · 尺度 {{matchup.scale}}</small><small v-if="matchup.foldEcePct!=null">滚动校准误差 {{matchup.foldEcePct}}% · 区间下限 ±{{matchup.modelMargin}}%</small><small v-else>跨赛区无直接训练样本 · 区间下限 ±{{matchup.modelMargin}}%</small><small v-if="matchup.weightProfile==='北部赛区校准'">胜率权重：火力 8 · 目标 56 · 空间 8 · 防守 11 · 资源 16 · 适应 1</small></div><div><span>{{compareTeam.team}} 模型胜率</span><strong>{{matchup.opponentPct}}%</strong><small v-if="matchup.h2hGames">历史交手 {{matchup.h2hGames}} 局：{{matchup.h2hWins}}胜{{matchup.h2hLosses}}负</small><small v-else>数据库中无直接交手</small></div></div><div class="comparison-table"><div class="comparison-row comparison-head"><b>同口径指标</b><b>{{selected.team}}</b><b>{{compareTeam.team}}</b><b>相对优势</b></div><div v-for="row in comparisonRows" :key="row.label" class="comparison-row"><span>{{row.label}}</span><strong>{{row.first}}</strong><strong>{{row.second}}</strong><em>{{row.leader}}</em></div></div></template><div v-else class="empty-state">选择另一支队伍后，将展示同颗粒度指标、优势来源与胜率区间。</div></section>
+    <section v-if="teamTab==='compare'" class="panel compare"><div class="section-head"><h2>双队对比与胜率</h2><span class="trust-badge">模型预测</span></div><div class="compare-controls"><select v-model="compareSlug"><option value="">选择另一支队伍</option><option v-for="t in index.teams.filter(t=>t.team!==selected.team)" :key="t.slug" :value="t.slug">{{t.team}}</option></select><select v-model="compareStage"><option>小组赛</option><option>淘汰赛</option></select></div><template v-if="compareTeam && matchup"><div class="prediction"><div><span>{{selected.team}} 模型胜率</span><strong>{{matchup.primaryPct}}%</strong><small>估计区间 {{matchup.interval[0]}}%–{{matchup.interval[1]}}%</small></div><div class="verdict"><span>对局判定</span><strong>{{matchup.verdict}}</strong><small>{{matchup.stage}} · 置信度：{{matchup.confidence}} · {{matchup.weightProfile}}{{matchup.resultWeight?' + 东部赛果 10%':''}} · 尺度 {{matchup.scale}}</small><small v-if="matchup.foldEcePct!=null">滚动校准误差 {{matchup.foldEcePct}}% · 区间下限 ±{{matchup.modelMargin}}%</small><small v-else>跨赛区无直接训练样本 · 区间下限 ±{{matchup.modelMargin}}%</small><small v-if="matchup.weightProfile==='北部赛区校准'">胜率权重：火力 8 · 目标 56 · 空间 5 · 防守 11 · 资源 19 · 适应 1</small></div><div><span>{{compareTeam.team}} 模型胜率</span><strong>{{matchup.opponentPct}}%</strong><small v-if="matchup.h2hGames">历史交手 {{matchup.h2hGames}} 局：{{matchup.h2hWins}}胜{{matchup.h2hLosses}}负</small><small v-else>数据库中无直接交手</small></div></div><div class="comparison-table"><div class="comparison-row comparison-head"><b>同口径指标</b><b>{{selected.team}}</b><b>{{compareTeam.team}}</b><b>相对优势</b></div><div v-for="row in comparisonRows" :key="row.label" class="comparison-row"><span>{{row.label}}</span><strong>{{row.first}}</strong><strong>{{row.second}}</strong><em>{{row.leader}}</em></div></div></template><div v-else class="empty-state">选择另一支队伍后，将展示同颗粒度指标、优势来源与胜率区间。</div></section>
   </main><main v-else><p>{{error||'正在加载…'}}</p></main>
 </div>
 <MethodologyDrawer :open="methodologyOpen" :title="methodologyTitle" :sections="methodologySections" @close="closeMethodology"/>
