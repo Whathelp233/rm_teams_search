@@ -42,6 +42,14 @@ DIMENSION_WEIGHTS = {
     "firepower": 0.08, "objective": 0.56, "spatial": 0.12,
     "defense": 0.11, "resource": 0.12, "adaptability": 0.01,
 }
+CURRENT_COMPONENT_WEIGHTS = {
+    "firepower": {"clean_output": 0.35, "accuracy": 0.15, "kill_conversion": 0.25, "pressure_uptime": 0.25},
+    "objective": {"outpost_pressure": 0.10, "outpost_conversion": 0.25, "base_pressure": 0.15, "base_conversion": 0.35, "strategic_tools": 0.15},
+    "spatial": {"relative_territory": 0.25, "forward_presence": 0.30, "neutral_control": 0.35, "field_coverage": 0.10},
+    "defense": {"trade_resilience": 0.35, "mobile_resilience": 0.25, "outpost_denial": 0.15, "base_denial": 0.15, "collapse_resistance": 0.10},
+    "resource": {"acquisition": 0.40, "utilization": 0.05, "combat_conversion": 0.10, "objective_conversion": 0.25, "thermal_efficiency": 0.20},
+    "adaptability": {"side_floor": 0.10, "opponent_floor": 0.10, "strong_opponent_response": 0.15, "setback_response": 0.35, "rematch_improvement": 0.30},
+}
 RELEASE_DIMENSION_WEIGHTS = {
     "南部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.15, "defense": 0.08},
     "东部赛区": DIMENSION_WEIGHTS,
@@ -84,6 +92,21 @@ def release_dimension_weights(region):
 
 def release_tactical_diff(dimension_diff, region):
     return sum(dimension_diff[key] * weight for key, weight in release_dimension_weights(region).items())
+
+
+def reconstruct_dimension_diffs(record, component_weights):
+    return {
+        dimension: sum(record["component_diff"][dimension][component] * weight for component, weight in weights.items())
+        for dimension, weights in component_weights.items()
+    }
+
+
+def component_probability(record, component_weights):
+    region = record["region"]
+    tactical_diff = release_tactical_diff(reconstruct_dimension_diffs(record, component_weights), region)
+    result_weight = release_result_weight(region)
+    difference = (1 - result_weight) * tactical_diff + result_weight * record["result_diff"]
+    return probability(difference, 0.0, region)
 
 
 def metrics(rows):
@@ -249,8 +272,96 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "weight_candidates": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "blend_grid": {}}
     failures = []
+    for dimension, weights in CURRENT_COMPONENT_WEIGHTS.items():
+        errors = [
+            abs(sum(record["component_diff"][dimension][component] * weight for component, weight in weights.items()) - record["dimension_diff"][dimension])
+            for record in records
+        ]
+        report["component_reconstruction"][dimension] = {
+            "max_abs_error": max(errors),
+            "mean_abs_error": sum(errors) / len(errors),
+            "rounding_tolerance": 0.15,
+        }
+        if max(errors) > 0.15:
+            failures.append(f"{dimension} component weights no longer reconstruct the published dimension difference")
+
+    def component_profile(component_weights):
+        profile_rows = defaultdict(lambda: defaultdict(list))
+        for record in records:
+            profile_rows[record["region"]][record["fold"]].append((component_probability(record, component_weights), record["won"]))
+        return {
+            region: {
+                "overall": metrics([row for fold in range(1, len(FOLDS) + 1) for row in profile_rows[region][fold]]),
+                "folds": {str(fold): metrics(profile_rows[region][fold]) for fold in range(1, len(FOLDS) + 1)},
+            }
+            for region in REGIONS
+        }
+
+    component_baseline = component_profile(CURRENT_COMPONENT_WEIGHTS)
+    for dimension, weights in CURRENT_COMPONENT_WEIGHTS.items():
+        for removed in weights:
+            remaining = {key: value for key, value in weights.items() if key != removed}
+            total = sum(remaining.values())
+            candidate_weights = {name: dict(values) for name, values in CURRENT_COMPONENT_WEIGHTS.items()}
+            candidate_weights[dimension] = {key: value / total for key, value in remaining.items()}
+            candidate_profile = component_profile(candidate_weights)
+            key = f"{dimension}.{removed}"
+            report["component_ablation_by_region_fold"][key] = {
+                region: {
+                    "overall_brier_delta": candidate_profile[region]["overall"]["brier"] - component_baseline[region]["overall"]["brier"],
+                    "folds": {
+                        str(fold): {
+                            "brier_delta": candidate_profile[region]["folds"][str(fold)]["brier"] - component_baseline[region]["folds"][str(fold)]["brier"],
+                            "accuracy_delta": candidate_profile[region]["folds"][str(fold)]["accuracy"] - component_baseline[region]["folds"][str(fold)]["accuracy"],
+                        }
+                        for fold in range(1, len(FOLDS) + 1)
+                    },
+                }
+                for region in REGIONS
+            }
+
+    perturbations = []
+    for dimension, weights in CURRENT_COMPONENT_WEIGHTS.items():
+        for donor in weights:
+            for receiver in weights:
+                if donor == receiver:
+                    continue
+                for shift in (0.01, 0.02, 0.03, 0.04, 0.05):
+                    if weights[donor] < shift:
+                        continue
+                    candidate_weights = {name: dict(values) for name, values in CURRENT_COMPONENT_WEIGHTS.items()}
+                    candidate_weights[dimension][donor] -= shift
+                    candidate_weights[dimension][receiver] += shift
+                    candidate_profile = component_profile(candidate_weights)
+                    brier_deltas, accuracy_deltas = [], []
+                    for region in REGIONS:
+                        for fold in range(1, len(FOLDS) + 1):
+                            key = str(fold)
+                            brier_deltas.append(candidate_profile[region]["folds"][key]["brier"] - component_baseline[region]["folds"][key]["brier"])
+                            accuracy_deltas.append(candidate_profile[region]["folds"][key]["accuracy"] - component_baseline[region]["folds"][key]["accuracy"])
+                    perturbations.append({
+                        "dimension": dimension, "move": f"{donor}→{receiver}", "weight_shift": shift,
+                        "max_fold_brier_delta": max(brier_deltas), "sum_fold_brier_delta": sum(brier_deltas),
+                        "min_fold_accuracy_delta": min(accuracy_deltas),
+                        "non_worse_brier_folds": sum(delta <= 1e-12 for delta in brier_deltas),
+                    })
+    perturbations.sort(key=lambda item: (item["max_fold_brier_delta"], item["sum_fold_brier_delta"]))
+    passing_perturbations = [
+        item for item in perturbations
+        if item["max_fold_brier_delta"] <= 1e-12 and item["min_fold_accuracy_delta"] >= -1e-12
+    ]
+    report["component_weight_perturbation"] = {
+        "selected": "current",
+        "tested_steps": [0.01, 0.02, 0.03, 0.04, 0.05],
+        "region_fold_tests_per_candidate": len(REGIONS) * len(FOLDS),
+        "passing_candidates": passing_perturbations,
+        "best_by_worst_fold": perturbations[:10],
+        "reason": "keep globally comparable component weights unless a one-to-five-point transfer improves or preserves Brier and accuracy in all nine region-fold tests",
+    }
+    if passing_perturbations:
+        failures.append("a component-weight transfer now dominates the release in all region-fold tests; recalibration is required")
     for region in REGIONS:
         report["regions"][region] = {model: metrics(rows[model][region]) for model in rows}
         strength = report["regions"][region]["strength"]
