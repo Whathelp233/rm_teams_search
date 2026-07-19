@@ -68,16 +68,28 @@ const tacticalWeights = {
   adaptability: .01,
 }
 
+const southMatchupWeights = {
+  ...tacticalWeights,
+  spatial: .15,
+  defense: .08,
+}
+
 const northMatchupWeights = {
   ...tacticalWeights,
-  spatial: .08,
-  resource: .16,
+  spatial: .05,
+  resource: .19,
+}
+
+const regionalMatchupWeights = { 南部赛区: southMatchupWeights, 东部赛区: tacticalWeights, 北部赛区: northMatchupWeights }
+const regionalMatchupLabels = {
+  南部赛区: '南部赛区校准（火力8·目标56·空间15·防守8·资源12·适应1）',
+  北部赛区: '北部赛区校准（火力8·目标56·空间5·防守11·资源19·适应1）',
 }
 
 const matchupUncertainty = {
   南部赛区: { margin: 12, foldEcePct: 11.1 },
   东部赛区: { margin: 13, foldEcePct: 12.2 },
-  北部赛区: { margin: 12, foldEcePct: 8.9 },
+  北部赛区: { margin: 12, foldEcePct: 7.5 },
 }
 
 function finite(value, fallback = 0) {
@@ -278,16 +290,16 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
   const primaryRegion = primary?.summary?.region || primary?.region
   const opponentRegion = opponent?.summary?.region || opponent?.region
   const sameRegion = primaryRegion === opponentRegion
-  const dimensionWeights = sameRegion && primaryRegion === '北部赛区' ? northMatchupWeights : tacticalWeights
-  const weightProfile = sameRegion && primaryRegion === '北部赛区' ? '北部赛区校准' : '全国统一六维'
+  const dimensionWeights = sameRegion ? (regionalMatchupWeights[primaryRegion] || tacticalWeights) : tacticalWeights
+  const weightProfile = sameRegion ? (regionalMatchupLabels[primaryRegion] || '全国统一六维') : '全国统一六维'
   const resultWeight = sameRegion && primaryRegion === '东部赛区' ? 0.10 : 0
   const primaryResult = finite(primary?.strength_analysis?.result_score, 50)
   const opponentResult = finite(opponent?.strength_analysis?.result_score, 50)
   const tacticalModelScore = team => Object.entries(dimensionWeights).reduce(
     (total, [key, weight]) => total + finite(team?.scores?.[key], 50) * weight, 0,
   )
-  const primaryTacticalModel = weightProfile === '北部赛区校准' ? tacticalModelScore(primary) : primaryStrength
-  const opponentTacticalModel = weightProfile === '北部赛区校准' ? tacticalModelScore(opponent) : opponentStrength
+  const primaryTacticalModel = sameRegion ? tacticalModelScore(primary) : primaryStrength
+  const opponentTacticalModel = sameRegion ? tacticalModelScore(opponent) : opponentStrength
   const primaryModelScore = primaryTacticalModel * (1 - resultWeight) + primaryResult * resultWeight
   const opponentModelScore = opponentTacticalModel * (1 - resultWeight) + opponentResult * resultWeight
   const regionalScale = primaryRegion === opponentRegion
