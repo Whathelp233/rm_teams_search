@@ -59,10 +59,10 @@ test('team comparison uses tactical and historical result inputs', () => {
   assert.ok(teamStrength(strongTeam) > teamStrength(weakerTeam))
 })
 
-test('composite strength gives defense an 8.1 percent effective weight', () => {
+test('composite strength gives defense its full eleven percent tactical weight', () => {
   const baseline = { summary: { win_rate: 50 }, scores: { firepower: 50, objective: 50, spatial: 50, defense: 0, resource: 50, adaptability: 50 } }
   const defended = { ...baseline, scores: { ...baseline.scores, defense: 100 } }
-  assert.ok(Math.abs(teamStrength(defended) - teamStrength(baseline) - 8.1) < 1e-9)
+  assert.ok(Math.abs(teamStrength(defended) - teamStrength(baseline) - 11) < 1e-9)
 })
 
 test('strength grade uses the same composite strength as comparison', () => {
@@ -194,6 +194,19 @@ test('head-to-head evidence is contextual and does not alter calibrated probabil
   const upsetHistory = matchupEstimate(strongTeam, weakerTeam, [{ won: 0 }, { won: 0 }, { won: 0 }])
   assert.equal(upsetHistory.primaryPct, withoutHistory.primaryPct)
   assert.ok(upsetHistory.primaryPct > 50)
+})
+
+test('only same-region East matchup uses the ten-percent result correction', () => {
+  const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '东部赛区' }, strength_analysis: { score: 60, result_score: 90 } }
+  const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '东部赛区' }, strength_analysis: { score: 60, result_score: 10 } }
+  const east = matchupEstimate(first, second)
+  assert.equal(east.resultWeight, .1)
+  assert.equal(east.scale, 10)
+  assert.ok(east.primaryPct > 50)
+  const cross = matchupEstimate(first, { ...second, summary: { ...second.summary, region: '北部赛区' } })
+  assert.equal(cross.resultWeight, 0)
+  assert.equal(cross.scale, 22)
+  assert.equal(cross.primaryPct, 50)
 })
 
 test('role facts rank nullable metrics without treating not-applicable as zero', () => {

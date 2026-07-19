@@ -22,8 +22,8 @@ DB = ROOT.parent / "sql" / "rmuc_2026_region_dataset.sqlite"
 FIXTURE = ROOT / "test" / "fixtures" / "rolling_score_folds.json"
 REGIONS = ("南部赛区", "东部赛区", "北部赛区")
 FOLDS = ((0.55, 0.70), (0.70, 0.85), (0.85, 1.00))
-RELEASE_RESULT_WEIGHT = 0.10
-RELEASE_SCALES = {"南部赛区": 16.0, "东部赛区": 10.0, "北部赛区": 24.0}
+RELEASE_RESULT_WEIGHTS = {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0}
+RELEASE_SCALES = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 23.0}
 RELEASE_3_8_BASELINE = {
     "overall": {"brier": 0.2271718878310605, "accuracy": 0.6413043478260869},
     "regions": {
@@ -38,8 +38,8 @@ RELEASE_3_8_BASELINE = {
     },
 }
 DIMENSION_WEIGHTS = {
-    "firepower": 0.15, "objective": 0.50, "spatial": 0.11,
-    "defense": 0.09, "resource": 0.14, "adaptability": 0.01,
+    "firepower": 0.08, "objective": 0.56, "spatial": 0.12,
+    "defense": 0.11, "resource": 0.12, "adaptability": 0.01,
 }
 LEGACY_COMPONENT_WEIGHTS = {
     "firepower": {"clean_output": 0.30, "accuracy": 0.25, "kill_conversion": 0.25, "pressure_uptime": 0.20},
@@ -47,7 +47,7 @@ LEGACY_COMPONENT_WEIGHTS = {
     "spatial": {"relative_territory": 0.30, "forward_presence": 0.25, "neutral_control": 0.20, "field_coverage": 0.25},
     "defense": {"trade_resilience": 0.25, "mobile_resilience": 0.20, "outpost_denial": 0.20, "base_denial": 0.25, "collapse_resistance": 0.10},
     "resource": {"acquisition": 0.25, "utilization": 0.20, "combat_conversion": 0.20, "objective_conversion": 0.15, "thermal_efficiency": 0.20},
-    "adaptability": {"side_transfer": 0.25, "opponent_robustness": 0.20, "strong_opponent_residual": 0.25, "setback_adjustment": 0.20, "rematch_adjustment": 0.10},
+    "adaptability": {"side_floor": 0.10, "opponent_floor": 0.10, "strong_opponent_response": 0.15, "setback_response": 0.35, "rematch_improvement": 0.30},
 }
 WEIGHT_CANDIDATES = {
     "current": DIMENSION_WEIGHTS,
@@ -61,6 +61,10 @@ WEIGHT_CANDIDATES = {
 def probability(first, second, region):
     scale = RELEASE_SCALES[region]
     return 1.0 / (1.0 + math.exp(-(first - second) / scale))
+
+
+def release_result_weight(region):
+    return RELEASE_RESULT_WEIGHTS[region]
 
 
 def metrics(rows):
@@ -196,11 +200,11 @@ def main():
         records = build_records()
         if args.write_fixture:
             FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-            FIXTURE.write_text(json.dumps({"schema_version": "3.9.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            FIXTURE.write_text(json.dumps({"schema_version": "4.0.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     else:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("schema_version") != "3.9.0":
-            raise SystemExit("rolling score fixture does not match score schema 3.9.0")
+        if fixture.get("schema_version") != "4.0.0":
+            raise SystemExit("rolling score fixture does not match score schema 4.0.0")
         records = fixture["records"]
 
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
@@ -210,7 +214,8 @@ def main():
         dimension_diff = record["dimension_diff"]
         result_diff = record["result_diff"]
         tactical_diff = sum(dimension_diff[key] * weight for key, weight in DIMENSION_WEIGHTS.items())
-        strength_diff = (1 - RELEASE_RESULT_WEIGHT) * tactical_diff + RELEASE_RESULT_WEIGHT * result_diff
+        result_weight = release_result_weight(record["region"])
+        strength_diff = (1 - result_weight) * tactical_diff + result_weight * result_diff
         model_diffs = {"strength": strength_diff, "tactical": tactical_diff, "result": result_diff}
         for model, difference in model_diffs.items():
             row = (probability(difference, 0.0, record["region"]), record["won"])
@@ -237,11 +242,12 @@ def main():
     candidate_rows_by_region = {}
     for region in REGIONS:
         scale = RELEASE_SCALES[region]
+        result_weight = release_result_weight(region)
         candidate_rows = [
-            (1.0 / (1.0 + math.exp(-((1 - RELEASE_RESULT_WEIGHT) * sum(dimension_diff[key] * weight for key, weight in DIMENSION_WEIGHTS.items()) + RELEASE_RESULT_WEIGHT * result_diff) / scale)), won)
+            (1.0 / (1.0 + math.exp(-((1 - result_weight) * sum(dimension_diff[key] * weight for key, weight in DIMENSION_WEIGHTS.items()) + result_weight * result_diff) / scale)), won)
             for dimension_diff, result_diff, won in observations[region]
         ]
-        report["candidate"][region] = {"result_weight": RELEASE_RESULT_WEIGHT, "scale": scale, **metrics(candidate_rows)}
+        report["candidate"][region] = {"result_weight": result_weight, "scale": scale, **metrics(candidate_rows)}
         candidate_rows_by_region[region] = candidate_rows
         candidate_all.extend(candidate_rows)
         if report["candidate"][region]["brier"] >= 0.25:
@@ -265,7 +271,8 @@ def main():
     h2h_history_rows = {"release": [], "legacy_blend": []}
     for record in records:
         dimension_diff, result_diff, region = record["dimension_diff"], record["result_diff"], record["region"]
-        difference = (1 - RELEASE_RESULT_WEIGHT) * sum(dimension_diff[key] * weight for key, weight in DIMENSION_WEIGHTS.items()) + RELEASE_RESULT_WEIGHT * result_diff
+        result_weight = release_result_weight(region)
+        difference = (1 - result_weight) * sum(dimension_diff[key] * weight for key, weight in DIMENSION_WEIGHTS.items()) + result_weight * result_diff
         base_probability = probability(difference, 0.0, region)
         games, wins = int(record.get("h2h_games", 0)), int(record.get("h2h_wins", 0))
         smoothed_rate = (wins + 1) / (games + 2)
@@ -298,9 +305,10 @@ def main():
         candidate_by_fold = defaultdict(list)
         for record in records:
             tactical_diff = sum(record["dimension_diff"][key] * weight for key, weight in DIMENSION_WEIGHTS.items())
+            result_weight = release_result_weight(record["region"])
             difference = (
-                (1 - RELEASE_RESULT_WEIGHT) * tactical_diff
-                + RELEASE_RESULT_WEIGHT * record["result_diff"]
+                (1 - result_weight) * tactical_diff
+                + result_weight * record["result_diff"]
                 + coefficient * record["opponent_score_diff"]
             )
             row = (probability(difference, 0.0, record["region"]), record["won"])
@@ -315,13 +323,13 @@ def main():
     report["opponent_score_adjustment"] = {
         "selected_coefficient": 0.0,
         "enters_strength": False,
-        "reason": "Bradley-Terry already corrects schedule; an additional positive opponent-score term is retained only if it improves rolling-origin validation",
+        "reason": "Bradley-Terry and opponent score remain schedule evidence; neither is added to tactical strength because positive schedule coefficients do not improve rolling-origin validation",
         "candidates": opponent_candidates,
     }
     release_opponent = opponent_candidates["coefficient_0.00"]["overall"]
     if abs(release_opponent["brier"] - report["overall"]["strength"]["brier"]) > 1e-12:
         failures.append("zero opponent-score coefficient does not reconstruct release strength")
-    component_models = {"score_3_9": defaultdict(list), "score_3_8": defaultdict(list)}
+    component_models = {"score_4_0": defaultdict(list), "score_3_8": defaultdict(list)}
     component_folds = {name: defaultdict(list) for name in component_models}
     for record in records:
         current_tactical = sum(
@@ -335,8 +343,9 @@ def main():
             )
             for dimension in DIMENSION_WEIGHTS
         )
-        for name, tactical_diff in (("score_3_9", current_tactical), ("score_3_8", legacy_tactical)):
-            difference = (1 - RELEASE_RESULT_WEIGHT) * tactical_diff + RELEASE_RESULT_WEIGHT * record["result_diff"]
+        for name, tactical_diff in (("score_4_0", current_tactical), ("score_3_8", legacy_tactical)):
+            result_weight = release_result_weight(record["region"])
+            difference = (1 - result_weight) * tactical_diff + result_weight * record["result_diff"]
             row = (probability(difference, 0.0, record["region"]), record["won"])
             component_models[name][record["region"]].append(row)
             component_folds[name][record["fold"]].append(row)
@@ -347,37 +356,38 @@ def main():
             "regions": {region: metrics(component_models[name][region]) for region in REGIONS},
             "folds": {str(fold): metrics(component_folds[name][fold]) for fold in range(1, len(FOLDS) + 1)},
         }
-    component_release = report["component_weight_validation"]["score_3_9"]
+    component_release = report["component_weight_validation"]["score_4_0"]
     component_legacy = report["component_weight_validation"]["score_3_8"]
     # The reconstructed legacy view isolates internal component weights while
-    # keeping 3.9 raw facts. Publication gates compare against the immutable
+    # keeping 4.0 raw facts. Publication gates compare against the immutable
     # score-3.8 rolling fixture metrics, so changed terminal-HP facts cannot make
     # the baseline move with the candidate.
     report["release_3_8_baseline"] = RELEASE_3_8_BASELINE
     if component_release["overall"]["brier"] >= RELEASE_3_8_BASELINE["overall"]["brier"]:
-        failures.append("score 3.9 does not improve overall chronological Brier over released score 3.8")
+        failures.append("score 4.0 does not improve overall chronological Brier over released score 3.8")
     if component_release["overall"]["accuracy"] < RELEASE_3_8_BASELINE["overall"]["accuracy"]:
-        failures.append("score 3.9 reduces overall chronological accuracy versus released score 3.8")
+        failures.append("score 4.0 reduces overall chronological accuracy versus released score 3.8")
     for region in REGIONS:
         baseline = RELEASE_3_8_BASELINE["regions"][region]
         if component_release["regions"][region]["brier"] >= baseline["brier"]:
-            failures.append(f"score 3.9 does not improve {region} chronological Brier over released score 3.8")
+            failures.append(f"score 4.0 does not improve {region} chronological Brier over released score 3.8")
         if component_release["regions"][region]["accuracy"] < baseline["accuracy"]:
-            failures.append(f"score 3.9 reduces {region} chronological accuracy versus released score 3.8")
+            failures.append(f"score 4.0 reduces {region} chronological accuracy versus released score 3.8")
     for fold in range(1, len(FOLDS) + 1):
         key = str(fold)
         baseline = RELEASE_3_8_BASELINE["folds"][key]
         if component_release["folds"][key]["brier"] >= baseline["brier"]:
-            failures.append(f"score 3.9 does not improve fold {fold} chronological Brier over released score 3.8")
+            failures.append(f"score 4.0 does not improve fold {fold} chronological Brier over released score 3.8")
         if component_release["folds"][key]["accuracy"] < baseline["accuracy"]:
-            failures.append(f"score 3.9 reduces fold {fold} chronological accuracy versus released score 3.8")
+            failures.append(f"score 4.0 reduces fold {fold} chronological accuracy versus released score 3.8")
     for name, candidate_weights in WEIGHT_CANDIDATES.items():
         candidate_rows = []
         regional_metrics = {}
         for region in REGIONS:
             scale = RELEASE_SCALES[region]
+            result_weight = release_result_weight(region)
             regional_rows = [
-                (1.0 / (1.0 + math.exp(-((1 - RELEASE_RESULT_WEIGHT) * sum(dimension_diff[key] * weight for key, weight in candidate_weights.items()) + RELEASE_RESULT_WEIGHT * result_diff) / scale)), won)
+                (1.0 / (1.0 + math.exp(-((1 - result_weight) * sum(dimension_diff[key] * weight for key, weight in candidate_weights.items()) + result_weight * result_diff) / scale)), won)
                 for dimension_diff, result_diff, won in observations[region]
             ]
             regional_metrics[region] = metrics(regional_rows)
@@ -386,12 +396,12 @@ def main():
     baseline = report["weight_candidates"]["score_3_4"]
     release = report["weight_candidates"]["current"]
     if release["overall"]["brier"] >= baseline["overall"]["brier"] - 0.001:
-        failures.append("score 3.5 weights do not improve chronological Brier by at least 0.001 over score 3.4")
+        failures.append("score 4.0 weights do not improve chronological Brier by at least 0.001 over score 3.4")
     if release["overall"]["accuracy"] < baseline["overall"]["accuracy"]:
-        failures.append("score 3.5 weights reduce chronological accuracy versus score 3.4")
+        failures.append("score 4.0 weights reduce chronological accuracy versus score 3.4")
     for region in REGIONS:
         if release["regions"][region]["brier"] > baseline["regions"][region]["brier"]:
-            failures.append(f"score 3.5 weights worsen {region} chronological Brier versus score 3.4")
+            failures.append(f"score 4.0 weights worsen {region} chronological Brier versus score 3.4")
     for removed in (None, *DIMENSION_WEIGHTS):
         weights = {key: value for key, value in DIMENSION_WEIGHTS.items() if key != removed}
         total = sum(weights.values())
@@ -399,8 +409,9 @@ def main():
         ablation_rows = []
         for region in REGIONS:
             scale = RELEASE_SCALES[region]
+            result_weight = release_result_weight(region)
             ablation_rows.extend([
-                (1.0 / (1.0 + math.exp(-((1 - RELEASE_RESULT_WEIGHT) * sum(dimension_diff[key] * weight for key, weight in weights.items()) + RELEASE_RESULT_WEIGHT * result_diff) / scale)), won)
+                (1.0 / (1.0 + math.exp(-((1 - result_weight) * sum(dimension_diff[key] * weight for key, weight in weights.items()) + result_weight * result_diff) / scale)), won)
                 for dimension_diff, result_diff, won in observations[region]
             ])
         report["dimension_ablation"]["all" if removed is None else f"without_{removed}"] = metrics(ablation_rows)

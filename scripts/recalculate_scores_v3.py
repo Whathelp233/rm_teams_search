@@ -20,11 +20,11 @@ from pathlib import Path
 MOBILE_TYPES = {"英雄", "工程", "步兵3", "步兵4", "哨兵", "空中"}
 COMBAT_CATEGORIES = {"17mm", "42mm", "飞镖"}
 DIMENSION_WEIGHTS = {
-    "firepower": 0.15,
-    "objective": 0.50,
-    "spatial": 0.11,
-    "defense": 0.09,
-    "resource": 0.14,
+    "firepower": 0.08,
+    "objective": 0.56,
+    "spatial": 0.12,
+    "defense": 0.11,
+    "resource": 0.12,
     "adaptability": 0.01,
 }
 COMPONENT_WEIGHTS = {
@@ -33,7 +33,7 @@ COMPONENT_WEIGHTS = {
     "spatial": {"relative_territory": 0.25, "forward_presence": 0.30, "neutral_control": 0.35, "field_coverage": 0.10},
     "defense": {"trade_resilience": 0.35, "mobile_resilience": 0.25, "outpost_denial": 0.15, "base_denial": 0.15, "collapse_resistance": 0.10},
     "resource": {"acquisition": 0.40, "utilization": 0.05, "combat_conversion": 0.10, "objective_conversion": 0.25, "thermal_efficiency": 0.20},
-    "adaptability": {"side_transfer": 0.10, "opponent_robustness": 0.10, "strong_opponent_residual": 0.20, "setback_adjustment": 0.30, "rematch_adjustment": 0.30},
+    "adaptability": {"side_floor": 0.10, "opponent_floor": 0.10, "strong_opponent_response": 0.15, "setback_response": 0.35, "rematch_improvement": 0.30},
 }
 
 
@@ -583,11 +583,13 @@ def main():
         side_n = min((len(values) for values in by_side.values()), default=0) if len(by_side) >= 2 else 0
         opponent_n = len(by_opponent)
         red_mean, blue_mean = mean(by_side.get("红", []), None), mean(by_side.get("蓝", []), None)
-        side_transfer = None if side_n == 0 else -abs(red_mean - blue_mean)
+        # Adaptation must reward a usable performance floor, not merely a small
+        # red/blue gap: two equally poor sides are not evidence of adaptability.
+        side_floor = None if side_n == 0 else min(red_mean, blue_mean)
         opponent_means = [mean(values) for values in by_opponent.values()]
-        opponent_robustness = (
+        opponent_floor = (
             None if opponent_n < 3
-            else quantile(opponent_means, 0.25) - 0.95 * statistics.median(opponent_means)
+            else quantile(opponent_means, 0.25)
         )
         rematch_adjustments = []
         matches_by_opponent = defaultdict(list)
@@ -602,16 +604,16 @@ def main():
                 current_value = conditional_perf[(current["game_id"], team)]
                 rematch_adjustments.append(max(-40.0, min(40.0, current_value - previous_value)))
         adaptation_raw[team] = {
-            "side_transfer": side_transfer,
-            "opponent_robustness": opponent_robustness,
-            "strong_opponent_residual": typical_with_floor(strong_residual, None),
-            "setback_adjustment": typical_with_floor(setback, None),
-            "rematch_adjustment": typical_with_floor(rematch_adjustments, None),
+            "side_floor": side_floor,
+            "opponent_floor": opponent_floor,
+            "strong_opponent_response": typical_with_floor(strong_residual, None),
+            "setback_response": typical_with_floor(setback, None),
+            "rematch_improvement": typical_with_floor(rematch_adjustments, None),
         }
         adaptation_samples[team] = {
-            "side_transfer": side_n * 2, "opponent_robustness": opponent_n,
-            "strong_opponent_residual": len(strong_residual), "setback_adjustment": len(setback),
-            "rematch_adjustment": len(rematch_adjustments),
+            "side_floor": side_n * 2, "opponent_floor": opponent_n,
+            "strong_opponent_response": len(strong_residual), "setback_response": len(setback),
+            "rematch_improvement": len(rematch_adjustments),
         }
 
     raw_dimensions = {"firepower": fire_raw, "objective": objective_raw, "spatial": spatial_raw, "defense": defense_raw, "resource": resource_raw}
@@ -675,11 +677,14 @@ def main():
         regional = [other for other in teams if payloads[other][1]["summary"]["region"] == region]
         opponent_region_ranks[team] = 1 + sum(opponent_scores[other]["score"] > opponent_scores[team]["score"] for other in regional)
         opponent_region_sizes[team] = len(regional)
-    strength_scores = {team: 0.90 * tactical_scores[team] + 0.10 * result_scores[team] for team in teams}
+    # Rolling-origin validation shows that adding historical W/L to the already
+    # opponent-normalized tactical facts worsens future-match Brier overall and
+    # in South/North. Keep BT as transparent schedule context, not a second score input.
+    strength_scores = dict(tactical_scores)
     overall_ranks = {team: 1 + sum(strength_scores[other] > strength_scores[team] for other in teams) for team in teams}
 
-    index["schema_version"] = "3.9.1"
-    index["data_version"] = "score-3.9.1"
+    index["schema_version"] = "4.0.0"
+    index["data_version"] = "score-4.0.0"
     index["placement_method"] = {
         "format": "参赛手册规定的16进8、8进4、半决赛、季军争夺战和冠军争夺战，结合数据库实际胜负推导",
         "sources": [
@@ -688,7 +693,7 @@ def main():
             "RMUC 2026 北部赛区参赛手册 V2.0.0",
         ],
     }
-    index["scoring_notice"] = "六维3.9.1：按规则5.8胜负优先级设置权重先验；赛果通过正则化 Bradley-Terry 按对手校正，对手分仅展开赛程证据，避免重复加分"
+    index["scoring_notice"] = "六维4.0：按规则5.8胜负优先级设置权重先验；滚动时间窗回测选择六维战术事实作为综合强度，Bradley-Terry赛果与逐对手分作为独立赛程证据，不重复加分"
     for team, (path, payload) in payloads.items():
         scores = {name: analyses[name][team]["score"] for name in COMPONENT_WEIGHTS}
         tactical, result, strength = tactical_scores[team], result_scores[team], strength_scores[team]
@@ -696,7 +701,7 @@ def main():
         invalid_points = sum(float(match.get("invalid_position_points") or 0) for match in payload["matches"])
         position_coverage = position_points / max(1.0, position_points + invalid_points)
         confidence = 100.0 * games_by_team[team] / (games_by_team[team] + 8.0) * math.sqrt(position_coverage)
-        payload["schema_version"] = "3.9.1"; payload["data_version"] = "score-3.9.1"
+        payload["schema_version"] = "4.0.0"; payload["data_version"] = "score-4.0.0"
         payload.pop("consistency_analysis", None)
         payload["scores"] = scores
         payload["dimension_ranks"] = dimension_ranks[team]
@@ -709,7 +714,7 @@ def main():
             method = "terminal base/outpost/mobile HP and clean damage exchange, blended with typical/downside aggregation" if name == "defense" else "team fact percentile with games/(games+6) shrinkage"
             if name == "adaptability":
                 method = "paired-condition transfer and residual response with component-specific evidence shrinkage"
-            detail.update({"version": "3.9.1", "method": method})
+            detail.update({"version": "4.0.0", "method": method})
             payload[f"{name}_analysis"] = detail
         payload["defense_analysis"]["excluded"] = excluded[team]
         payload["score_confidence"] = {
@@ -721,19 +726,21 @@ def main():
             "region_rank": opponent_region_ranks[team], "region_size": opponent_region_sizes[team],
         }
         payload["strength_analysis"] = {
-            "version": "3.9.1", "score": rounded(strength), "tactical_score": rounded(tactical),
+            "version": "4.0.0", "score": rounded(strength), "tactical_score": rounded(tactical),
             "result_score": rounded(result), "schedule_rating": rounded(ratings[team], 3),
             "raw_win_rate_pct": rounded(100.0 * sum(bool(match.get("won")) for match in payload["matches"]) / max(1, len(payload["matches"]))),
             "opponent_adjustment": "result_score is estimated jointly from every opponent and red/blue side; transparent opponent score is audit evidence and is not added twice",
-            "tactical_weight": 0.90, "result_weight": 0.10,
+            "tactical_weight": 1.0, "result_weight": 0.0,
+            "matchup_result_weights": {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0, "跨赛区": 0.0},
+            "matchup_scales": {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 23.0, "跨赛区": 22.0},
             "tactical_dimension_weights": DIMENSION_WEIGHTS,
             "victory_rule_alignment": {
                 "source": "RMUC 2026比赛规则手册V2.0.1 第5.8节",
                 "priority": ["基地终局血量", "前哨是否被毁及终局血量", "全队攻击伤害", "全队总剩余血量"],
-                "direct_dimension_weight": 0.74,
-                "enabling_dimension_weight": 0.26,
+                "direct_dimension_weight": 0.75,
+                "enabling_dimension_weight": 0.25,
             },
-            "model": "regularized Bradley-Terry with red-side intercept",
+            "model": "rule-aligned tactical composite; rolling-origin matchup calibration uses 10% regularized Bradley-Terry only for same-region East predictions",
             "red_side_intercept": rounded(side_bias, 3),
         }
         listing = listings[team]
@@ -746,7 +753,7 @@ def main():
         listing["placement"] = placements.get(team)
         compact_write(path, payload)
     compact_write(index_path, index)
-    print(f"recalculated {len(teams)} teams with score schema 3.9.1")
+    print(f"recalculated {len(teams)} teams with score schema 4.0.0")
 
 
 if __name__ == "__main__":

@@ -59,8 +59,8 @@ def main():
     failures = []
     report = {"schema": index["schema_version"], "regions": {}, "dimensions": {}, "regional_dimensions": {}}
     expected_dimension_weights = {
-        "firepower": 0.15, "objective": 0.50, "spatial": 0.11,
-        "defense": 0.09, "resource": 0.14, "adaptability": 0.01,
+        "firepower": 0.08, "objective": 0.56, "spatial": 0.12,
+        "defense": 0.11, "resource": 0.12, "adaptability": 0.01,
     }
     expected_component_weights = {
         "firepower": {"clean_output": 0.35, "accuracy": 0.15, "kill_conversion": 0.25, "pressure_uptime": 0.25},
@@ -68,20 +68,22 @@ def main():
         "spatial": {"relative_territory": 0.25, "forward_presence": 0.30, "neutral_control": 0.35, "field_coverage": 0.10},
         "defense": {"trade_resilience": 0.35, "mobile_resilience": 0.25, "outpost_denial": 0.15, "base_denial": 0.15, "collapse_resistance": 0.10},
         "resource": {"acquisition": 0.40, "utilization": 0.05, "combat_conversion": 0.10, "objective_conversion": 0.25, "thermal_efficiency": 0.20},
-        "adaptability": {"side_transfer": 0.10, "opponent_robustness": 0.10, "strong_opponent_residual": 0.20, "setback_adjustment": 0.30, "rematch_adjustment": 0.30},
+        "adaptability": {"side_floor": 0.10, "opponent_floor": 0.10, "strong_opponent_response": 0.15, "setback_response": 0.35, "rematch_improvement": 0.30},
     }
     if not math.isclose(sum(expected_dimension_weights.values()), 1.0):
         failures.append("published tactical dimension weights do not sum to 1")
     for team in teams:
         actual = team["strength_analysis"]["tactical_dimension_weights"]
         if actual != expected_dimension_weights:
-            failures.append(f"{team['team']} tactical dimension weights differ from score 3.9")
+            failures.append(f"{team['team']} tactical dimension weights differ from score 4.0")
         alignment = team["strength_analysis"].get("victory_rule_alignment", {})
-        if alignment.get("direct_dimension_weight") != 0.74 or alignment.get("enabling_dimension_weight") != 0.26:
-            failures.append(f"{team['team']} victory-rule weight split differs from score 3.9")
+        if alignment.get("direct_dimension_weight") != 0.75 or alignment.get("enabling_dimension_weight") != 0.25:
+            failures.append(f"{team['team']} victory-rule weight split differs from score 4.0")
+        if team["strength_analysis"].get("tactical_weight") != 1.0 or team["strength_analysis"].get("result_weight") != 0.0:
+            failures.append(f"{team['team']} release strength does not match rolling-origin selected blend")
         for dimension, expected in expected_component_weights.items():
             if team[f"{dimension}_analysis"]["weights"] != expected:
-                failures.append(f"{team['team']} {dimension} component weights differ from score 3.9")
+                failures.append(f"{team['team']} {dimension} component weights differ from score 4.0")
         opponent = team.get("opponent_score_analysis", {})
         if opponent.get("enters_strength") is not False or opponent.get("strength_coefficient") != 0.0:
             failures.append(f"{team['team']} transparent opponent score must not duplicate BT strength correction")
@@ -160,6 +162,7 @@ def main():
 
     games = {}
     strengths = {team["team"]: team["strength_analysis"]["score"] for team in teams}
+    results = {team["team"]: team["strength_analysis"]["result_score"] for team in teams}
     for team in teams:
         for match in team["matches"]:
             games.setdefault(match["game_id"], (team["team"], match["opponent"], bool(match["won"]), team["summary"]["region"]))
@@ -170,8 +173,11 @@ def main():
         for primary, opponent, won, game_region in games.values():
             if region != "全部" and game_region != region:
                 continue
-            scale = {"南部赛区": 16.0, "东部赛区": 10.0, "北部赛区": 24.0}[game_region]
-            probability = 1.0 / (1.0 + math.exp(-(strengths[primary] - strengths[opponent]) / scale))
+            result_weight = 0.10 if game_region == "东部赛区" else 0.0
+            scale = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 23.0}[game_region]
+            primary_model = (1.0 - result_weight) * strengths[primary] + result_weight * results[primary]
+            opponent_model = (1.0 - result_weight) * strengths[opponent] + result_weight * results[opponent]
+            probability = 1.0 / (1.0 + math.exp(-(primary_model - opponent_model) / scale))
             probabilities.append(probability)
             outcomes.append(float(won))
         brier = sum((probability - outcome) ** 2 for probability, outcome in zip(probabilities, outcomes)) / len(outcomes)

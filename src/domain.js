@@ -60,11 +60,11 @@ export function densityOpacity(samples, maximum) {
 }
 
 const tacticalWeights = {
-  firepower: .15,
-  objective: .50,
-  spatial: .11,
-  defense: .09,
-  resource: .14,
+  firepower: .08,
+  objective: .56,
+  spatial: .12,
+  defense: .11,
+  resource: .12,
   adaptability: .01,
 }
 
@@ -174,11 +174,13 @@ export function summarizeDimensions(team) {
 }
 
 export function teamStrength(team) {
+  if (team?.strength_analysis?.score !== null && team?.strength_analysis?.score !== undefined && Number.isFinite(Number(team.strength_analysis.score))) {
+    return Number(team.strength_analysis.score)
+  }
   const tactical = Object.entries(tacticalWeights).reduce(
     (total, [key, weight]) => total + finite(team?.scores?.[key]) * weight, 0,
   )
-  const result = finite(team?.strength_analysis?.result_score, finite(team?.summary?.win_rate ?? team?.win_rate))
-  return .90 * tactical + .10 * result
+  return tactical
 }
 
 export function strengthGrade(score) {
@@ -263,12 +265,19 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
   const opponentStrength = teamStrength(opponent)
   const primaryRegion = primary?.summary?.region || primary?.region
   const opponentRegion = opponent?.summary?.region || opponent?.region
+  const sameRegion = primaryRegion === opponentRegion
+  const resultWeight = sameRegion && primaryRegion === '东部赛区' ? 0.10 : 0
+  const primaryResult = finite(primary?.strength_analysis?.result_score, 50)
+  const opponentResult = finite(opponent?.strength_analysis?.result_score, 50)
+  const primaryModelScore = primaryStrength * (1 - resultWeight) + primaryResult * resultWeight
+  const opponentModelScore = opponentStrength * (1 - resultWeight) + opponentResult * resultWeight
   const regionalScale = primaryRegion === opponentRegion
-    ? ({ 南部赛区: 16, 东部赛区: 10, 北部赛区: 24 }[primaryRegion] || 20)
-    : 20
-  // Rolling-origin backtests favor wider uncertainty in South and North.
-  // Cross-region comparisons have no direct sample and remain conservative.
-  const probability = 1 / (1 + Math.exp(-(primaryStrength - opponentStrength) / regionalScale))
+    ? ({ 南部赛区: 10, 东部赛区: 10, 北部赛区: 23 }[primaryRegion] || 22)
+    : 22
+  // Rolling-origin tests retain a small result correction only for East-region
+  // matchups. Rankings stay tactical-only and cross-region estimates remain
+  // conservative because no direct cross-region sample exists in this dataset.
+  const probability = 1 / (1 + Math.exp(-(primaryModelScore - opponentModelScore) / regionalScale))
   const h2hGames = headToHead.length
   const h2hWins = headToHead.filter(match => Boolean(match.won)).length
   // Direct meetings are shown as context, but rolling-origin tests find that
@@ -288,6 +297,10 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
     opponentPct,
     primaryStrength: Math.round(primaryStrength * 10) / 10,
     opponentStrength: Math.round(opponentStrength * 10) / 10,
+    primaryModelScore: Math.round(primaryModelScore * 10) / 10,
+    opponentModelScore: Math.round(opponentModelScore * 10) / 10,
+    resultWeight,
+    scale: regionalScale,
     h2hGames,
     h2hWins,
     h2hLosses: h2hGames - h2hWins,
