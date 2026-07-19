@@ -74,6 +74,12 @@ const northMatchupWeights = {
   resource: .16,
 }
 
+const matchupUncertainty = {
+  南部赛区: { margin: 12, foldEcePct: 11.1 },
+  东部赛区: { margin: 13, foldEcePct: 12.2 },
+  北部赛区: { margin: 12, foldEcePct: 8.9 },
+}
+
 function finite(value, fallback = 0) {
   const number = Number(value)
   return Number.isFinite(number) ? number : fallback
@@ -301,7 +307,8 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
   const confidence = !sameRegion ? '探索性'
     : primaryRegion === '北部赛区' ? (minimumSample >= 10 ? '中' : '较低')
       : minimumSample >= 15 ? '较高' : minimumSample >= 10 ? '中' : '较低'
-  const modelMargin = !sameRegion ? 15 : primaryRegion === '北部赛区' ? 12 : 8
+  const uncertainty = sameRegion ? matchupUncertainty[primaryRegion] : null
+  const modelMargin = uncertainty?.margin || 15
   const margin = Math.max(modelMargin, 24 / Math.sqrt(Math.max(1, minimumSample)))
   let verdict = '接近五五开'
   if (primaryPct >= 65) verdict = `${primary.team}明显占优`
@@ -320,6 +327,7 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
     weightProfile,
     dimensionWeights,
     modelMargin,
+    foldEcePct: uncertainty?.foldEcePct ?? null,
     h2hGames,
     h2hWins,
     h2hLosses: h2hGames - h2hWins,
