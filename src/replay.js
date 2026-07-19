@@ -5,6 +5,21 @@ function median(values) {
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2
 }
 
+function inflateRows(rows = [], columns = []) {
+  if (!rows.length || !Array.isArray(rows[0])) return rows
+  return rows.map(row => Object.fromEntries(columns.map((column, index) => [column, row[index]])))
+}
+
+export function normalizeReplayData(payload) {
+  if (!payload) return payload
+  const events = inflateRows(payload.events || [], payload.event_columns || [])
+  const damageEffects = inflateRows(payload.damage_effects || [], payload.damage_columns || []).map(effect => ({
+    ...effect,
+    candidates: inflateRows(effect.candidates || [], payload.candidate_columns || []),
+  }))
+  return { ...payload, events, damage_effects: damageEffects }
+}
+
 export function nativeFrameRate(frames = []) {
   const deltas = []
   for (let index = 1; index < frames.length; index += 1) {
@@ -54,6 +69,11 @@ function penaltyRobots(events = []) {
 }
 
 export function deriveDamageEffects(gameData) {
+  if (gameData?.damage_effects?.length) {
+    return Array.isArray(gameData.damage_effects[0])
+      ? normalizeReplayData(gameData).damage_effects
+      : gameData.damage_effects
+  }
   const frames = gameData?.frames || [], robots = gameData?.robots || [], penalties = penaltyRobots(gameData?.events)
   const effects = []
   for (let index = 1; index < frames.length; index += 1) {
@@ -84,10 +104,25 @@ export function deriveShotEffects(gameData) {
     for (const row of rows) {
       const shots17 = Math.max(0, Number(row[8]) || 0), shots42 = Math.max(0, Number(row[9]) || 0)
       if (!row[10] || (!shots17 && !shots42)) continue
-      effects.push({ id: `${second}-${row[0]}`, second: Number(second), robot: row[0], x: row[1], y: row[2], shots17, shots42 })
+      const yaw = Number(row[12])
+      effects.push({
+        id: `${second}-${row[0]}`, second: Number(second), robot: row[0], x: row[1], y: row[2],
+        yaw: Number.isFinite(yaw) ? yaw : null, shots17, shots42,
+      })
     }
   }
   return effects
+}
+
+export function teamFrameAt(teamFrames = [], time = 0) {
+  if (!teamFrames.length) return []
+  let low = 0, high = teamFrames.length - 1
+  while (low <= high) {
+    const middle = (low + high) >> 1
+    if (Number(teamFrames[middle][0]) <= Number(time)) low = middle + 1
+    else high = middle - 1
+  }
+  return teamFrames[Math.max(0, high)]?.[1] || []
 }
 
 export function activeDamageEffects(effects = [], time = 0, lifetime = .9) {

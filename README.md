@@ -81,7 +81,9 @@ VITE_BASE_PATH=/rm_teams_search/ npm run build
 - 原始库没有红黄牌字段，牌色只按规则扣血比例分级推断，证据不足时保留为“牌色未知”。
 - 行为树内部地图、区域 YAML 和 `sentry2_scau_two_mode_tunnel_overlay.png` 不参与位置映射。
 
-`public/data/games` 保存 613 份双方共用时间轴，`public/data/heatmaps` 保存 96 份秒级热力数据，`public/maps` 保存规则手册实场图和官方坐标简图。原始比赛数据库和规则 PDF 不进入本仓库。
+`public/data/games` 保存 613 份回放 v3 双方共用时间轴，包含秒级位置/枪口朝向/热量/经济/基地与前哨状态、结构化事件、分级伤害归因和四级装配槽位。`public/data/heatmaps` 保存 96 份秒级热力数据，`public/maps` 保存规则手册实场图和官方坐标简图。原始比赛数据库和规则 PDF 不进入本仓库。
+
+本地有原始 SQLite 时，可运行 `python3 scripts/export_replay_data_v3.py` 重建回放数据；`python3 scripts/audit_replay_data.py` 会核对 613 场覆盖、伤害事件、装配计数和文件体积预算。
 
 `public/data/roles` 使用 `role-data-1.1.0`：每个兵种包含轻量汇总索引和按队伍拆分的完整秒级/事件级 JSON。`public/downloads/roles` 提供对应的完整 CSV.gz、JSON.gz 和 `manifest.json`。兵种稳定性汇总排除比赛前 10 秒与后 10 秒，但下载中的原始时间线不裁剪。源库受击事件没有射手身份；伤害按可审计的兵种级模型推定：42mm 根据弹种唯一性归给英雄，17mm 按命中同秒及前 1 秒的发弹份额分配，每条记录同时提供置信度、候选兵种和归因依据，不作为射手身份或命中率。运行 `python3 scripts/export_role_data.py` 可从工作区 SQLite 确定性重建全部文件。
 

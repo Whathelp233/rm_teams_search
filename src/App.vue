@@ -7,15 +7,16 @@ import TacticDimensionCard from './components/TacticDimensionCard.vue'
 import TacticalPatternCard from './components/TacticalPatternCard.vue'
 import { aggregateHeatCells, densityOpacity, doubleEliminationNextPairings, doubleEliminationStandings, matchupEstimate, monteCarloTournament, officialToMap, predictedWinner, rankRoleTeams, rankTeamsByStrength, rasterMapCenter, rasterMapPlacement, rasterMapPoint, roleFrameSeries, roleMetrics, seriesWinProbability, strengthGrade, summarizeDimensions, swissNextPairings, swissStandings, teamPerspectivePoint, teamStrength } from './domain.js'
 import { buildCounterPlans, visibleTacticalPatterns } from './tactics.js'
-import { activeDamageEffects as effectsAt, deriveDamageEffects, deriveShotEffects, interpolatedFrame, nativeFrameRate } from './replay.js'
+import { activeDamageEffects as effectsAt, deriveDamageEffects, deriveShotEffects, interpolatedFrame, nativeFrameRate, normalizeReplayData, teamFrameAt } from './replay.js'
 
 const base = import.meta.env.BASE_URL
-const dataRevision = 'score-3.9.0-role-data-1.1.0-tournament-3.0.0-tactics-1.0.0'
+const dataRevision = 'score-3.9.0-role-data-1.1.0-replay-3.0.0-tournament-3.0.0-tactics-1.0.0'
 const index = ref({ teams: [] }), dataManifest = ref(null), selected = ref(null), query = ref(''), region = ref('全部'), error = ref('')
 const teamTab = ref('overview'), density = ref(localStorage.getItem('rmuc-density') || 'comfortable'), filtersOpen = ref(false), methodologyOpen = ref(false), loadingTeam = ref(false), loadingHeat = ref(false)
 const heat = ref(null), heatSide = ref('全部'), heatRobot = ref('全部'), heatView = ref('actual'), heatFrom = ref(0), heatTo = ref(420), heatMaskOpacity = ref(.34)
 const gameData = ref(null), activeGame = ref(null), time = ref(0), playing = ref(false), speed = ref(1), tail = ref(20), mapMode = ref('raster'), routeView = ref('actual')
 const damageEffects = ref([]), shotEffects = ref([])
+const replayEventFilter = ref('全部'), showLowConfidence = ref(false), selectedReplayRobot = ref(null), loadingGame = ref(false), gameError = ref('')
 const visibleRobots = ref({}), compareSlug = ref(''), compareTeam = ref(null)
 const viewMode = ref('team'), roleCatalog = ref({ roles: [] }), selectedRoleSlug = ref('hero'), roleIndex = ref(null), roleTeam = ref(null)
 const roleRegion = ref('全部'), roleQuery = ref(''), roleMetric = ref('availability_pct'), activeRoleGameId = ref(null), roleTime = ref(0)
@@ -33,6 +34,12 @@ const teamTabs = [
   ['roles', '兵种'], ['discipline', '纪律'], ['compare', '对比'],
 ]
 const roleShortcuts = [['hero','英雄'],['engineer','工程'],['infantry3','步兵3'],['infantry4','步兵4'],['aerial','空中'],['sentry','哨兵'],['dart','飞镖']]
+const assemblyRules = [
+  { level:1, unlock:0, benefit:'首次：每10秒获得50金币；重复：额外5金币' },
+  { level:2, unlock:60, benefit:'首次：机器人等级上限提高至7级；重复：额外10金币' },
+  { level:3, unlock:120, benefit:'首次：25%防御增益、等级上限10级；重复：额外15金币' },
+  { level:4, unlock:180, benefit:'首次：50%防御增益、基地增加2000血量、额外50金币；仅限一次' },
+]
 let scoreChart, damageChart, chartApiPromise, animationFrame, idleChart, previousFrame = 0, teamController, compareController, detailPromise, counterRequestId = 0
 const requestCache = new Map()
 const colors = ['#ff5268','#ff9e54','#ffd166','#9b7bff','#ef70cb','#ff355f','#48a8ff','#58d3ff','#41e1a6','#6f8dff','#61b8ff','#16c7e8']
@@ -176,12 +183,46 @@ const methodologySections = computed(() => {
   }
   return [common, ...(byTab[teamTab.value] || [])]
 })
-const shownEvents = computed(() => (gameData.value?.events || []).filter(e => e.second <= time.value))
+const eventGroups = ['全部', '交战', '目标', '资源', '装配', '状态', '纪律']
+function eventGroup(event) {
+  if (event.type === '装配成功') return '装配'
+  if (event.type === '受击' || event.type === '发弹') return event.target_type === '基地' || event.target_type === '前哨站' ? '目标' : '交战'
+  if (['飞镖命中', '飞镖闸门开'].includes(event.type) || event.target_type === '基地' || event.target_type === '前哨站') return '目标'
+  if (['增益', '能量机关', '雷达反制UAV'].includes(event.type)) return '资源'
+  if (event.type === '阵亡' || event.type === '恢复在场') return '状态'
+  if (String(event.type).includes('牌') || event.category === '判罚') return '纪律'
+  return '资源'
+}
+const replayEvents = computed(() => {
+  const regular = gameData.value?.events || []
+  const hits = damageEffects.value.map(effect => ({
+    second: effect.second, type: '受击', team: effect.target_team, side: effect.target_side,
+    robot: effect.target, robot_type: effect.target_type, target_type: effect.target_type,
+    category: effect.category, damage: effect.damage, confidence: effect.confidence, evidence: effect.basis,
+  }))
+  return [...regular, ...hits].sort((first, second) => Number(first.second) - Number(second.second))
+})
+const filteredReplayEvents = computed(() => replayEvents.value.filter(event => replayEventFilter.value === '全部' || eventGroup(event) === replayEventFilter.value))
+const shownEvents = computed(() => filteredReplayEvents.value.filter(event => event.second <= time.value).slice(-80).reverse())
 const currentFrame = computed(() => interpolatedFrame(gameData.value?.frames, time.value))
+const currentTeamFrame = computed(() => teamFrameAt(gameData.value?.team_frames, time.value))
+const teamStatus = computed(() => Object.fromEntries(currentTeamFrame.value.map(row => [row[0], {
+  side: row[0], totalCoins: row[1], remainingCoins: row[2], baseHp: row[3], baseMaxHp: row[4], outpostHp: row[5], outpostMaxHp: row[6],
+}])))
+const currentFacilities = computed(() => (gameData.value?.facilities || []).map(facility => {
+  const status = teamStatus.value[facility.side] || {}
+  return { ...facility, hp: facility.type === '基地' ? status.baseHp : status.outpostHp, maxHp: facility.type === '基地' ? status.baseMaxHp : status.outpostMaxHp }
+}))
 const replayNativeHz = computed(() => nativeFrameRate(gameData.value?.frames).toFixed(1))
-const activeDamage = computed(() => effectsAt(damageEffects.value, time.value))
+const activeDamage = computed(() => effectsAt(damageEffects.value, time.value, 1.15).filter(effect => effect.x != null && effect.y != null && (effect.confidence !== 'low' || showLowConfidence.value)))
 const activeShots = computed(() => effectsAt(shotEffects.value, time.value, .6))
 const recentDamage = computed(() => damageEffects.value.filter(effect => effect.second <= time.value).slice(-12).reverse())
+const selectedReplayRow = computed(() => currentFrame.value.find(row => row[0] === selectedReplayRobot.value) || null)
+const selectedReplayMeta = computed(() => selectedReplayRobot.value == null ? null : gameData.value?.robots?.[selectedReplayRobot.value])
+const assemblyBySide = computed(() => Object.fromEntries(['红', '蓝'].map(side => [side, [1, 2, 3, 4].map(level => ({
+  level,
+  events: (gameData.value?.events || []).filter(event => event.type === '装配成功' && event.side === side && event.assembly_level === level),
+}))])))
 const trails = computed(() => {
   if (!gameData.value) return []
   const result = gameData.value.robots.map((robot, i) => ({ robot, i, points: [] }))
@@ -203,6 +244,22 @@ function frameXY(row) {
   return mapMode.value === 'vector' ? point : rasterMapPoint(point[0], point[1], gameData.value?.map || 'current')
 }
 function effectXY(effect) { return frameXY([0, effect.x, effect.y]) }
+function sourceXY(effect) { return frameXY([0, effect.source_x, effect.source_y]) }
+function shotEndXY(shot) {
+  if (shot.yaw == null) return effectXY(shot)
+  const radians = Number(shot.yaw) * Math.PI / 180
+  return effectXY({ x: Number(shot.x) + Math.cos(radians) * .9, y: Number(shot.y) + Math.sin(radians) * .9 })
+}
+function sideTeam(side) { return side === '红' ? gameData.value?.game?.red_team : gameData.value?.game?.blue_team }
+function eventTitle(event) {
+  if (event.type === '受击') return `${event.category || ''}${event.target_type || event.robot_type || ''}受击 -${event.damage || 0}`
+  if (event.type === '装配成功') return `${event.category}装配成功 · 用时${event.assembly_duration_sec ?? '—'}秒`
+  return `${event.type}${event.category ? ` · ${event.category}` : ''}`
+}
+function candidateText(effect) {
+  if (effect.shooter_type || !effect.candidates?.length) return ''
+  return `候选：${effect.candidates.map(candidate => `${candidate.robot_type}${candidate.angle_error == null ? '' : ` ${candidate.angle_error}°`}`).join(' / ')}`
+}
 function confidenceLabel(value) { return value === 'high' ? '高置信度' : value === 'medium' ? '中置信度' : '低置信度' }
 function routeMapTransform() {
   if (routeView.value !== 'own' || activeGame.value?.side !== '蓝') return ''
@@ -609,9 +666,14 @@ async function loadTeam(teamSlug) {
   } finally { loadingTeam.value = false }
 }
 async function loadGame(game) {
-  playing.value = false; activeGame.value = game
-  const response = await fetchData(`data/games/${game.game_id}.json`); if (!response.ok) throw new Error('对局时间轴加载失败')
-  gameData.value = await response.json(); damageEffects.value = deriveDamageEffects(gameData.value); shotEffects.value = deriveShotEffects(gameData.value); time.value = 0; visibleRobots.value = Object.fromEntries(gameData.value.robots.map((_, i) => [i, true]))
+  playing.value = false; activeGame.value = game; loadingGame.value = true; gameError.value = ''; gameData.value = null
+  try {
+    const response = await fetchData(`data/games/${game.game_id}.json`); if (!response.ok) throw new Error('对局时间轴加载失败')
+    gameData.value = normalizeReplayData(await response.json()); damageEffects.value = deriveDamageEffects(gameData.value); shotEffects.value = deriveShotEffects(gameData.value); time.value = 0
+    visibleRobots.value = Object.fromEntries(gameData.value.robots.map((_, i) => [i, true])); selectedReplayRobot.value = null; replayEventFilter.value = '全部'; showLowConfidence.value = false
+  } catch (loadError) {
+    gameError.value = loadError.message || '对局时间轴加载失败'
+  } finally { loadingGame.value = false }
 }
 async function openTacticalEvidence(gameId) {
   const match = selected.value?.matches?.find(item => item.game_id === gameId)
@@ -790,19 +852,31 @@ onBeforeUnmount(() => { document.documentElement.classList.remove('drawer-lock')
     </section>
     <section v-if="teamTab==='map'" class="panel"><div class="section-head"><h2>秒级热力图</h2><span>{{heatView==='actual'?'实际阵营':'己方归一化'}}</span></div><div class="toolbar"><select v-model="heatView"><option value="actual">实际场地图</option><option value="canonical">己方归一化</option></select><select v-model="heatSide"><option>全部</option><option>红</option><option>蓝</option></select><select v-model="heatRobot"><option>全部</option><option>英雄</option><option>工程</option><option>步兵3</option><option>步兵4</option><option>空中</option><option>哨兵</option></select><label>从 <input type="number" v-model.number="heatFrom"></label><label>到 <input type="number" v-model.number="heatTo"></label><label>地图遮罩 <input type="range" v-model.number="heatMaskOpacity" min="0" max=".75" step=".05"></label></div><div class="heat-legend"><span>低</span><i></i><span>高</span><b>0.5m 网格</b><b>最高 {{maxHeat}} 车·秒</b></div><div v-if="loadingHeat" class="empty-state">正在加载该队地图数据…</div><HeatmapCanvas v-else-if="heat" :cells="renderedHeat" :image="`${base}maps/field-current.jpg`" :mask-opacity="heatMaskOpacity" :scale-x="heatPlacement.scaleX" :scale-y="heatPlacement.scaleY"/></section>
     <section v-if="teamTab==='matches'" class="panel"><div class="section-head"><h2>逐局时间轴</h2><span>{{selected.matches.length}} 局</span></div><div class="match-grid"><button v-for="m in selected.matches" :key="m.game_id" :class="{active:activeGame?.game_id===m.game_id}" @click="loadGame(m)"><b>{{m.won?'胜':'负'}} · {{m.opponent}}</b><span>{{m.rule_version}} · {{m.side}}方</span><small>局 {{m.game_id}} · {{fmtSecond(m.duration_sec)}}</small></button></div></section>
+    <section v-if="teamTab==='matches' && loadingGame" class="panel empty-state">正在加载完整对局遥测…</section>
+    <section v-if="teamTab==='matches' && gameError" class="panel empty-state load-error"><b>{{gameError}}</b><button @click="loadGame(activeGame)">重新加载</button></section>
     <section v-if="teamTab==='matches' && gameData" class="panel timeline">
       <div class="toolbar replay-toolbar"><button class="play" @click="togglePlay">{{playing?'暂停':'播放'}}</button><b>{{fmtSecond(time)}} / {{fmtSecond(gameData.game.duration_sec)}}</b><span class="replay-rate">原始 {{replayNativeHz}} Hz · 位置插值 ≤60 FPS</span><select v-model.number="speed"><option :value=".5">0.5×</option><option :value="1">1×</option><option :value="2">2×</option><option :value="4">4×</option></select><label>移动尾迹 <input type="number" v-model.number="tail" min="3" max="120"> 秒</label><select v-model="mapMode"><option value="raster">规则实场图</option><option value="vector">官方坐标简图</option></select><select v-model="routeView"><option value="actual">红左 / 蓝右</option><option value="own">己方视角</option></select></div>
-      <input class="scrubber" type="range" min="0" :max="gameData.game.duration_sec" step=".05" v-model.number="time">
-      <div class="damage-confidence-legend"><b>发弹 / 扣血效果</b><span class="shot">发弹脉冲：位置与弹量事实</span><span class="high">高：扣血位置确认且同秒有敌方发弹</span><span class="medium">中：扣血位置确认、原因不明</span><span class="low">低：沿用上一有效位置</span><small>无枪口朝向数据，不绘制推定弹道；判罚扣血已排除</small></div>
+      <div class="replay-scoreboard">
+        <article v-for="side in ['红','蓝']" :key="side" :class="side==='红'?'red':'blue'"><header><b>{{side}}方 · {{sideTeam(side)}}</b><strong>{{gameData.game.winner===sideTeam(side)?'胜':'负'}}</strong></header><div><span>基地 <b>{{teamStatus[side]?.baseHp ?? '—'}} / {{teamStatus[side]?.baseMaxHp ?? '—'}}</b></span><span>前哨 <b>{{teamStatus[side]?.outpostHp ?? '—'}} / {{teamStatus[side]?.outpostMaxHp ?? '—'}}</b></span><span>经济 <b>{{teamStatus[side]?.remainingCoins ?? '—'}} / {{teamStatus[side]?.totalCoins ?? '—'}}</b></span></div></article>
+      </div>
+      <div class="replay-scrub"><input class="scrubber" type="range" min="0" :max="gameData.game.duration_sec" step=".05" v-model.number="time"><div class="event-markers"><button v-for="(event,indexAt) in filteredReplayEvents" :key="`${event.second}-${event.type}-${indexAt}`" :class="eventGroup(event)" :style="{left:`${100*event.second/gameData.game.duration_sec}%`}" :title="`${fmtSecond(event.second)} ${eventTitle(event)}`" @click="time=event.second"></button></div></div>
+      <div class="damage-confidence-legend"><b>发弹方向 / 命中归因</b><span class="shot">实线短线：枪口位置、朝向与弹量事实</span><span class="high">高：唯一射手、时间与枪口方向吻合</span><span class="medium">中：兵种唯一或几何候选明显领先</span><label class="low"><input type="checkbox" v-model="showLowConfidence">显示低置信候选</label><small>完整连线是分级推定；撞击、判罚和飞镖不会伪造射手弹道</small></div>
+      <div class="replay-workspace">
       <svg class="field replay-field" viewBox="0 0 28 15"><image :href="`${base}maps/${mapFile}`" width="28" height="15" preserveAspectRatio="none" opacity=".72" :transform="routeMapTransform()"/><polyline v-for="trailItem in trails" :key="trailItem.i" :points="trailItem.points.map(p=>frameXY(p).join(',')).join(' ')" fill="none" :stroke="colors[trailItem.i%colors.length]" stroke-width=".09"/>
-        <g v-for="shot in activeShots" :key="shot.id" class="shot-effect"><circle :cx="effectXY(shot)[0]" :cy="effectXY(shot)[1]" r=".19"/><text :x="effectXY(shot)[0]+.2" :y="effectXY(shot)[1]+.33">{{shot.shots42?'42mm ×'+shot.shots42:'17mm ×'+shot.shots17}}</text></g>
+        <g v-for="shot in activeShots" :key="shot.id" class="shot-effect"><line v-if="shot.yaw!=null" class="firing-ray" :x1="effectXY(shot)[0]" :y1="effectXY(shot)[1]" :x2="shotEndXY(shot)[0]" :y2="shotEndXY(shot)[1]"/><circle :cx="effectXY(shot)[0]" :cy="effectXY(shot)[1]" r=".19"/><text :x="effectXY(shot)[0]+.2" :y="effectXY(shot)[1]+.33">{{shot.shots42?'42mm ×'+shot.shots42:'17mm ×'+shot.shots17}}</text></g>
         <g v-for="effect in activeDamage" :key="effect.id" :class="['damage-effect',effect.confidence]">
+          <line v-if="effect.kind==='projectile' && effect.source_x!=null && effect.source_y!=null" class="attributed-path" :x1="sourceXY(effect)[0]" :y1="sourceXY(effect)[1]" :x2="effectXY(effect)[0]" :y2="effectXY(effect)[1]"/>
           <circle class="impact-wave" :cx="effectXY(effect)[0]" :cy="effectXY(effect)[1]" r=".2"/><circle class="impact-core" :cx="effectXY(effect)[0]" :cy="effectXY(effect)[1]" r=".13"/><text :x="effectXY(effect)[0]+.18" :y="effectXY(effect)[1]-.22">-{{effect.damage}}</text>
         </g>
-        <g v-for="row in currentFrame" :key="row[0]" v-show="visibleRobots[row[0]]!==false"><circle :cx="frameXY(row)[0]" :cy="frameXY(row)[1]" r=".19" :fill="colors[row[0]%colors.length]" stroke="white" stroke-width=".04"/><rect class="hp-track" :x="frameXY(row)[0]-.28" :y="frameXY(row)[1]+.23" width=".56" height=".07"/><rect class="hp-value" :x="frameXY(row)[0]-.28" :y="frameXY(row)[1]+.23" :width=".56*Math.max(0,Math.min(1,row[3]/Math.max(1,row[4])))" height=".07"/><text :x="frameXY(row)[0]+.25" :y="frameXY(row)[1]" font-size=".32" fill="white">{{gameData.robots[row[0]].robot_type}}</text></g>
+        <g v-for="facility in currentFacilities" :key="facility.side+facility.type" :class="['facility-marker',facility.side==='红'?'red':'blue']"><rect :x="effectXY(facility)[0]-.24" :y="effectXY(facility)[1]-.24" width=".48" height=".48" rx=".08"/><rect class="hp-track" :x="effectXY(facility)[0]-.38" :y="effectXY(facility)[1]+.3" width=".76" height=".08"/><rect class="hp-value" :x="effectXY(facility)[0]-.38" :y="effectXY(facility)[1]+.3" :width=".76*Math.max(0,Math.min(1,(facility.hp||0)/Math.max(1,facility.maxHp||1)))" height=".08"/><text :x="effectXY(facility)[0]+.3" :y="effectXY(facility)[1]" font-size=".28">{{facility.side}}{{facility.type}}</text></g>
+        <g v-for="row in currentFrame" :key="row[0]" v-show="visibleRobots[row[0]]!==false" :class="['replay-robot',{selected:selectedReplayRobot===row[0]}]" @click="selectedReplayRobot=row[0]"><circle :cx="frameXY(row)[0]" :cy="frameXY(row)[1]" r=".19" :fill="colors[row[0]%colors.length]" stroke="white" stroke-width=".04"/><line v-if="row[12]!=null" class="robot-heading" :x1="frameXY(row)[0]" :y1="frameXY(row)[1]" :x2="shotEndXY({x:row[1],y:row[2],yaw:row[12]})[0]" :y2="shotEndXY({x:row[1],y:row[2],yaw:row[12]})[1]"/><rect class="hp-track" :x="frameXY(row)[0]-.28" :y="frameXY(row)[1]+.23" width=".56" height=".07"/><rect class="hp-value" :x="frameXY(row)[0]-.28" :y="frameXY(row)[1]+.23" :width=".56*Math.max(0,Math.min(1,row[3]/Math.max(1,row[4])))" height=".07"/><text :x="frameXY(row)[0]+.25" :y="frameXY(row)[1]" font-size=".32" fill="white">{{gameData.robots[row[0]].robot_type}}</text></g>
       </svg>
+      <aside class="replay-telemetry"><template v-if="selectedReplayRow && selectedReplayMeta"><header><span>{{selectedReplayMeta.side}}方</span><h3>{{selectedReplayMeta.robot_type}}</h3><small>{{selectedReplayMeta.team}}</small></header><dl><div><dt>血量</dt><dd>{{selectedReplayRow[3]}} / {{selectedReplayRow[4]}}</dd></div><div><dt>底盘功率</dt><dd>{{selectedReplayRow[5]}}</dd></div><div><dt>17mm 热量</dt><dd>{{selectedReplayRow[6]}} / {{selectedReplayRow[13] ?? '—'}}</dd></div><div><dt>42mm 热量</dt><dd>{{selectedReplayRow[7]}} / {{selectedReplayRow[14] ?? '—'}}</dd></div><div><dt>本秒发弹</dt><dd>17mm {{selectedReplayRow[8]}} · 42mm {{selectedReplayRow[9]}}</dd></div><div><dt>高度 / 朝向</dt><dd>{{selectedReplayRow[11] ?? '—'}} m · {{selectedReplayRow[12] ?? '—'}}°</dd></div><div><dt>状态</dt><dd>{{selectedReplayRow[3]<=0?'战亡':selectedReplayRow[15]?'虚弱':'在场'}}</dd></div></dl></template><div v-else class="empty-state">点击地图中的机器人查看完整遥测</div></aside>
+      </div>
       <div class="legend"><label v-for="(r,i) in gameData.robots" :key="i"><input type="checkbox" v-model="visibleRobots[i]"><i :style="{background:colors[i%colors.length]}"></i>{{r.side}}{{r.robot_type}} · {{r.team}}</label></div>
-      <div class="replay-details"><div class="damage-feed"><h3>确认扣血 <small>{{damageEffects.length}} 条</small></h3><button v-for="effect in recentDamage" :key="effect.id" @click="time=effect.second"><b>{{fmtSecond(effect.second)}} · {{gameData.robots[effect.target]?.side}}{{gameData.robots[effect.target]?.robot_type}} -{{effect.damage}}</b><span :class="['confidence-chip',effect.confidence]">{{confidenceLabel(effect.confidence)}}</span><small>{{effect.basis}}</small></button></div><div class="events"><button v-for="(e,i) in shownEvents.slice(-30)" :key="i" @click="time=e.second"><b>{{fmtSecond(e.second)}} {{e.type}}</b><span>{{e.team||e.detail||''}}</span><small :class="['confidence-chip',e.confidence]">{{confidenceLabel(e.confidence)}}</small></button></div></div>
+      <section class="assembly-console"><div class="section-head"><h3>科技核心装配</h3><span>完成点为事实 · 区间起点为推定</span></div><div class="assembly-sides"><article v-for="side in ['红','蓝']" :key="side" :class="side==='红'?'red':'blue'"><h4>{{side}}方 · {{sideTeam(side)}}</h4><div class="assembly-levels"><div v-for="rule in assemblyRules" :key="rule.level" :class="{completed:assemblyBySide[side][rule.level-1].events.length}"><header><b>{{rule.level}}级</b><span>{{fmtSecond(rule.unlock)}}后可选</span></header><template v-if="assemblyBySide[side][rule.level-1].events.length"><button v-for="event in assemblyBySide[side][rule.level-1].events" :key="event.second" @click="time=event.second"><b>{{fmtSecond(event.second)}} 完成</b><span>记录耗时 {{event.assembly_duration_sec}}秒</span><small>推定 {{fmtSecond(event.assembly_start_sec)}}–{{fmtSecond(event.second)}}</small></button></template><p v-else>{{rule.level===4?'当前数据未观测到四级装配成功':'本局未完成'}}</p><small>{{rule.benefit}}</small></div></div></article></div></section>
+      <div class="event-filter"><b>事件轨道</b><button v-for="group in eventGroups" :key="group" :class="{active:replayEventFilter===group}" @click="replayEventFilter=group">{{group}}</button></div>
+      <div class="replay-details"><div class="damage-feed"><h3>实际扣血与来源 <small>{{damageEffects.length}} 条</small></h3><button v-for="effect in recentDamage" :key="effect.id" @click="time=effect.second"><b>{{fmtSecond(effect.second)}} · {{effect.target_side}}{{effect.target_type}} -{{effect.damage}}</b><span :class="['confidence-chip',effect.confidence]">{{effect.kind==='projectile'?confidenceLabel(effect.confidence):effect.category}}</span><span>{{effect.shooter_type?`${effect.shooter_side}${effect.shooter_type} → `:''}}{{effect.category}}</span><small>{{effect.basis}}{{effect.angle_error==null?'':` · 枪口夹角 ${effect.angle_error}°`}}</small><small v-if="candidateText(effect)">{{candidateText(effect)}}</small></button></div><div class="events"><button v-for="(event,indexAt) in shownEvents" :key="`${event.second}-${event.type}-${indexAt}`" @click="time=event.second"><b>{{fmtSecond(event.second)}} {{eventTitle(event)}}</b><span>{{event.team||event.side||''}}</span><small :class="['confidence-chip',event.confidence]">{{confidenceLabel(event.confidence)}}</small></button><p v-if="!shownEvents.length">当前时间前没有该类事件。</p></div></div>
     </section>
     <section v-if="teamTab==='roles'" class="panel role-launcher"><div class="section-head"><h2>各兵种比赛数据</h2><span>事实 / 推定分列</span></div><div class="role-shortcuts"><button v-for="([key,label]) in roleShortcuts" :key="key" @click="openTeamRole(key)"><b>{{label}}</b><span>查看 {{selected.team}} 的{{label}}数据</span></button></div></section>
     <section v-if="teamTab==='discipline'" class="panel"><div class="section-head"><h2>黄牌 / 红牌</h2><span class="trust-badge">仅推定</span></div><div class="penalty-table"><div v-for="p in selected.penalty_incidents" :key="`${p.game_id}-${p.second}`"><b>局 {{p.game_id}} · {{fmtSecond(p.second)}} · {{p.incident_type}}</b><span>{{p.offender_type||'对象未知'}} · 扣血 {{p.penalty_damage}} · {{p.confidence}}置信<span v-if="p.inferred_red"> · 推定红牌</span></span></div><p v-if="!selected.penalty_incidents.length">该队样本中无可识别判罚事件。</p></div></section>
