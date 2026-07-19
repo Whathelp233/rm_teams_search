@@ -419,6 +419,10 @@ def build_records():
                     "side": game["side"], "stage": game["stage"],
                     "match_no": game["match_no"], "round_no": game["round_no"],
                     "dimension_diff": {dimension: round(first["scores"][dimension] - second["scores"][dimension], 3) for dimension in DIMENSION_WEIGHTS},
+                    "dimension_scores": {
+                        "primary": {dimension: first["scores"][dimension] for dimension in DIMENSION_WEIGHTS},
+                        "opponent": {dimension: second["scores"][dimension] for dimension in DIMENSION_WEIGHTS},
+                    },
                     "recent_dimension_diff": {
                         str(window): {
                             dimension: round(
@@ -466,11 +470,11 @@ def main():
         records = build_records()
         if args.write_fixture:
             FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-            FIXTURE.write_text(json.dumps({"schema_version": "4.3.0", "recent_series_windows": RECENT_SERIES_WINDOWS, "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            FIXTURE.write_text(json.dumps({"schema_version": "4.4.0", "recent_series_windows": RECENT_SERIES_WINDOWS, "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     else:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("schema_version") != "4.3.0" or tuple(fixture.get("recent_series_windows", ())) != RECENT_SERIES_WINDOWS:
-            raise SystemExit("rolling score fixture does not match score schema 4.3.0")
+        if fixture.get("schema_version") != "4.4.0" or tuple(fixture.get("recent_series_windows", ())) != RECENT_SERIES_WINDOWS:
+            raise SystemExit("rolling score fixture does not match score schema 4.4.0")
         records = fixture["records"]
 
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
@@ -496,7 +500,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "evidence_adaptive_calibration": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "evidence_adaptive_calibration": {}, "nonlinear_dimension_validation": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
     failures = []
     for region, weights in RELEASE_DIMENSION_WEIGHTS.items():
         if not math.isclose(sum(weights.values()), 1.0, abs_tol=1e-12):
@@ -1004,6 +1008,113 @@ def main():
         }
         if supported:
             failures.append(f"{region} has statistically supported evidence-adaptive calibration; release review is required")
+
+    # A weighted mean can theoretically hide a catastrophic weakness. Compare
+    # it with predeclared weak-link and balance summaries built from the same
+    # six pre-game percentiles. These are matchup candidates, not new facts.
+    core_dimensions = ("firepower", "objective", "defense", "resource")
+
+    def lower_mean(scores, dimensions, count):
+        return sum(sorted(scores[key] for key in dimensions)[:count]) / count
+
+    nonlinear_profiles = {
+        "core_minimum": lambda scores, region: min(scores[key] for key in core_dimensions),
+        "core_lower_two": lambda scores, region: lower_mean(scores, core_dimensions, 2),
+        "all_lower_two": lambda scores, region: lower_mean(scores, tuple(DIMENSION_WEIGHTS), 2),
+        "core_harmonic": lambda scores, region: len(core_dimensions) / sum(
+            1.0 / max(1e-6, scores[key]) for key in core_dimensions
+        ),
+        "balanced_composite": lambda scores, region: (
+            sum(scores[key] * release_dimension_weights(region)[key] for key in DIMENSION_WEIGHTS)
+            - 0.5 * math.sqrt(sum(
+                (scores[key] - sum(scores.values()) / len(scores)) ** 2 for key in scores
+            ) / len(scores))
+        ),
+    }
+    for region in REGIONS:
+        regional_records = [record for record in records if record["region"] == region]
+        baseline_probability = lambda record, region=region: probability(
+            release_strength_diff(record), 0.0, region, record.get("stage")
+        )
+        baseline_by_fold = defaultdict(list)
+        for record in regional_records:
+            baseline_by_fold[record["fold"]].append((baseline_probability(record), record["won"]))
+        baseline_folds = {
+            str(fold): metrics(baseline_by_fold[fold]) for fold in range(1, len(FOLDS) + 1)
+        }
+        baseline_overall = metrics([
+            row for fold in range(1, len(FOLDS) + 1) for row in baseline_by_fold[fold]
+        ])
+        candidates = []
+        for profile_name, profile in nonlinear_profiles.items():
+            for alpha in (0.05, 0.10, 0.15, 0.20, 0.25):
+                def candidate_probability(
+                    record, profile=profile, alpha=alpha, region=region
+                ):
+                    baseline_tactical = release_tactical_diff(record["dimension_diff"], region)
+                    scores = record["dimension_scores"]
+                    nonlinear_diff = profile(scores["primary"], region) - profile(scores["opponent"], region)
+                    tactical = (1.0 - alpha) * baseline_tactical + alpha * nonlinear_diff
+                    result_weight = release_result_weight(region)
+                    difference = (1.0 - result_weight) * tactical + result_weight * record["result_diff"]
+                    return probability(difference, 0.0, region, record.get("stage"))
+
+                by_fold = defaultdict(list)
+                for record in regional_records:
+                    by_fold[record["fold"]].append((candidate_probability(record), record["won"]))
+                folds = {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)}
+                overall = metrics([row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]])
+                brier_deltas = [
+                    folds[str(fold)]["brier"] - baseline_folds[str(fold)]["brier"]
+                    for fold in range(1, len(FOLDS) + 1)
+                ]
+                accuracy_deltas = [
+                    folds[str(fold)]["accuracy"] - baseline_folds[str(fold)]["accuracy"]
+                    for fold in range(1, len(FOLDS) + 1)
+                ]
+                candidates.append({
+                    "profile": profile_name, "nonlinear_weight": alpha,
+                    "overall": overall, "folds": folds,
+                    "overall_brier_delta": overall["brier"] - baseline_overall["brier"],
+                    "max_fold_brier_delta": max(brier_deltas),
+                    "min_fold_accuracy_delta": min(accuracy_deltas),
+                    "stable_all_folds": max(brier_deltas) <= 1e-12 and min(accuracy_deltas) >= -1e-12,
+                })
+        candidates.sort(key=lambda item: (item["max_fold_brier_delta"], item["overall_brier_delta"]))
+        stable = [item for item in candidates if item["stable_all_folds"]]
+        best = min(stable, key=lambda item: item["overall_brier_delta"], default=None)
+        bootstrap = None
+        supported = False
+        if best:
+            profile = nonlinear_profiles[best["profile"]]
+            alpha = best["nonlinear_weight"]
+
+            def selected_probability(record, profile=profile, alpha=alpha, region=region):
+                baseline_tactical = release_tactical_diff(record["dimension_diff"], region)
+                scores = record["dimension_scores"]
+                nonlinear_diff = profile(scores["primary"], region) - profile(scores["opponent"], region)
+                tactical = (1.0 - alpha) * baseline_tactical + alpha * nonlinear_diff
+                result_weight = release_result_weight(region)
+                difference = (1.0 - result_weight) * tactical + result_weight * record["result_diff"]
+                return probability(difference, 0.0, region, record.get("stage"))
+
+            bootstrap = clustered_probability_delta(
+                records, region, baseline_probability, selected_probability
+            )
+            supported = (
+                best["overall_brier_delta"] <= -0.001
+                and bootstrap["probability_candidate_improves"] >= 0.975
+                and bootstrap["confidence_interval_95"][1] < 0
+            )
+        report["nonlinear_dimension_validation"][region] = {
+            "baseline": {"overall": baseline_overall, "folds": baseline_folds},
+            "candidate_count": len(candidates), "stable_candidates": len(stable),
+            "best_stable_candidate": best, "best_by_worst_fold": candidates[:5],
+            "clustered_bootstrap": bootstrap, "statistically_supported": supported,
+            "decision": "review_for_release" if supported else "retain_linear_composite",
+        }
+        if supported:
+            failures.append(f"{region} has statistically supported nonlinear dimension profile; release review is required")
 
     def correction_profile(region, transform):
         by_fold = defaultdict(list)
