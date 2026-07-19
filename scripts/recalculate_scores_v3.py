@@ -27,6 +27,11 @@ DIMENSION_WEIGHTS = {
     "resource": 0.12,
     "adaptability": 0.01,
 }
+MATCHUP_DIMENSION_WEIGHTS = {
+    "南部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.15, "defense": 0.08},
+    "东部赛区": DIMENSION_WEIGHTS,
+    "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.05, "resource": 0.19},
+}
 COMPONENT_WEIGHTS = {
     "firepower": {"clean_output": 0.35, "accuracy": 0.15, "kill_conversion": 0.25, "pressure_uptime": 0.25},
     "objective": {"outpost_pressure": 0.10, "outpost_conversion": 0.25, "base_pressure": 0.15, "base_conversion": 0.35, "strategic_tools": 0.15},
@@ -731,14 +736,14 @@ def main():
             "raw_win_rate_pct": rounded(100.0 * sum(bool(match.get("won")) for match in payload["matches"]) / max(1, len(payload["matches"]))),
             "opponent_adjustment": "result_score is estimated jointly from every opponent and red/blue side; transparent opponent score is audit evidence and is not added twice",
             "tactical_weight": 1.0, "result_weight": 0.0,
-            "matchup_model_version": "4.2.0",
+            "matchup_model_version": "4.3.0",
             "matchup_result_weights": {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0, "跨赛区": 0.0},
             "matchup_scales": {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0, "跨赛区": 22.0},
             "matchup_uncertainty_floor_pct": {"南部赛区": 12.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0},
-            "matchup_mean_fold_ece_pct": {"南部赛区": 11.1, "东部赛区": 12.2, "北部赛区": 8.9, "跨赛区": None},
+            "matchup_mean_fold_ece_pct": {"南部赛区": 11.1, "东部赛区": 12.2, "北部赛区": 7.5, "跨赛区": None},
             "matchup_dimension_weights": {
                 "全国统一": DIMENSION_WEIGHTS,
-                "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.08, "resource": 0.16},
+                **MATCHUP_DIMENSION_WEIGHTS,
             },
             "tactical_dimension_weights": DIMENSION_WEIGHTS,
             "victory_rule_alignment": {
@@ -747,7 +752,7 @@ def main():
                 "direct_dimension_weight": 0.75,
                 "enabling_dimension_weight": 0.25,
             },
-            "model": "rule-aligned tactical composite; rolling-origin matchup calibration uses 10% regularized Bradley-Terry for East, a lower-spatial/higher-resource tactical profile for North, and fold-ECE uncertainty floors",
+            "model": "rule-aligned tactical composite; rolling-origin matchup calibration uses 10% regularized Bradley-Terry for East, region-specific tactical weights that improve every future fold for South and North, and fold-ECE uncertainty floors",
             "red_side_intercept": rounded(side_bias, 3),
         }
         listing = listings[team]

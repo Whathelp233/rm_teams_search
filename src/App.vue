@@ -10,7 +10,7 @@ import { buildCounterPlans, visibleTacticalPatterns } from './tactics.js'
 import { activeDamageEffects as effectsAt, deriveDamageEffects, deriveShotEffects, interpolatedFrame, nativeFrameRate, normalizeReplayData, teamFrameAt } from './replay.js'
 
 const base = import.meta.env.BASE_URL
-const dataRevision = 'score-4.0.0-matchup-4.2.0-role-data-1.1.0-replay-3.1.0-tournament-3.0.0-tactics-1.0.0'
+const dataRevision = 'score-4.0.0-matchup-4.3.0-role-data-1.1.0-replay-3.1.0-tournament-3.0.0-tactics-1.0.0'
 const index = ref({ teams: [] }), dataManifest = ref(null), selected = ref(null), query = ref(''), region = ref('全部'), error = ref('')
 const teamTab = ref('overview'), density = ref(localStorage.getItem('rmuc-density') || 'comfortable'), filtersOpen = ref(false), methodologyOpen = ref(false), loadingTeam = ref(false), loadingHeat = ref(false)
 const heat = ref(null), heatSide = ref('全部'), heatRobot = ref('全部'), heatView = ref('actual'), heatFrom = ref(0), heatTo = ref(420), heatMaskOpacity = ref(.34)
@@ -179,7 +179,7 @@ const methodologySections = computed(() => {
     matches:[{ title:'时间轴与坐标', items:['前 10 秒与后 10 秒不计入强度统计，但时间轴保留完整比赛。','全局视图固定红方在左、蓝方在右；己方视图会整体旋转地图和双方机器人。'] }],
     roles:[{ title:'兵种数据', items:['兵种视图支持按造成伤害、目标伤害、在场率、里程和阵亡数排序；推定伤害与事实指标分开标注。'] }],
     discipline:[{ title:'牌色推断', items:['源数据只有判罚扣血，没有牌色字段；牌色按同步扣血比例推断，并保留高、中或未知置信状态。'] }],
-    compare:[{ title:'胜率模型', items:['胜率按赛区分别滚动校准：东部同赛区加入 10% 赛程校正赛果；北部降低定位噪声较大的空间权重并提高资源转化权重；跨赛区使用全国统一纯六维。透明对手分和直接交手仅作背景。'] }],
+    compare:[{ title:'胜率模型', items:['胜率按赛区分别滚动校准：南部降低与目标终局信息重叠的防守权重并提高空间权重；东部同赛区加入 10% 赛程校正赛果；北部继续降低定位噪声较大的空间权重并提高资源转化权重；跨赛区使用全国统一纯六维。透明对手分和直接交手仅作背景。'] }],
   }
   return [common, ...(byTab[teamTab.value] || [])]
 })

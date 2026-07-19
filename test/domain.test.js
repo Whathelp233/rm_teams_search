@@ -213,13 +213,23 @@ test('North matchup calibration shifts noisy spatial weight into resource eviden
   const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '北部赛区' }, scores: { ...strongTeam.scores, spatial: 0, resource: 100 }, strength_analysis: { score: 60, result_score: 50 } }
   const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '北部赛区' }, scores: { ...weakerTeam.scores, spatial: 100, resource: 0 }, strength_analysis: { score: 60, result_score: 50 } }
   const north = matchupEstimate(first, second)
-  assert.equal(north.weightProfile, '北部赛区校准')
+  assert.match(north.weightProfile, /^北部赛区校准/)
   assert.equal(north.scale, 21)
-  assert.equal(north.dimensionWeights.spatial, .08)
-  assert.equal(north.dimensionWeights.resource, .16)
+  assert.equal(north.dimensionWeights.spatial, .05)
+  assert.equal(north.dimensionWeights.resource, .19)
   assert.ok(north.primaryPct > 50)
   assert.equal(north.confidence, '中')
   assert.equal(north.modelMargin, 12)
+})
+
+test('South matchup calibration reduces duplicated defense weight and values independent field control', () => {
+  const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '南部赛区' }, scores: { ...strongTeam.scores, spatial: 100, defense: 0 }, strength_analysis: { score: 50, result_score: 50 } }
+  const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '南部赛区' }, scores: { ...weakerTeam.scores, spatial: 0, defense: 100 }, strength_analysis: { score: 50, result_score: 50 } }
+  const south = matchupEstimate(first, second)
+  assert.match(south.weightProfile, /^南部赛区校准/)
+  assert.equal(south.dimensionWeights.spatial, .15)
+  assert.equal(south.dimensionWeights.defense, .08)
+  assert.ok(south.primaryPct > 50)
 })
 
 test('cross-region matchup stays exploratory and exposes a wider interval', () => {
@@ -245,6 +255,11 @@ test('regional matchup intervals cover rolling calibration drift', () => {
   )
   assert.equal(east.foldEcePct, 12.2)
   assert.equal(east.modelMargin, 13)
+  const north = matchupEstimate(
+    { ...strongTeam, summary: { ...strongTeam.summary, region: '北部赛区' } },
+    { ...weakerTeam, summary: { ...weakerTeam.summary, region: '北部赛区' } },
+  )
+  assert.equal(north.foldEcePct, 7.5)
 })
 
 test('role facts rank nullable metrics without treating not-applicable as zero', () => {
