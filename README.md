@@ -81,7 +81,7 @@ VITE_BASE_PATH=/rm_teams_search/ npm run build
 - 原始库没有红黄牌字段，牌色只按规则扣血比例分级推断，证据不足时保留为“牌色未知”。
 - 行为树内部地图、区域 YAML 和 `sentry2_scau_two_mode_tunnel_overlay.png` 不参与位置映射。
 
-`public/data/games` 保存 613 份回放 v3 双方共用时间轴，包含秒级位置/枪口朝向/热量/经济/基地与前哨状态、结构化事件、分级伤害归因和四级装配槽位。`public/data/heatmaps` 保存 96 份秒级热力数据，`public/maps` 保存规则手册实场图和官方坐标简图。原始比赛数据库和规则 PDF 不进入本仓库。
+`public/data/games` 保存 613 份回放 v3.1 双方共用时间轴，包含秒级位置/枪口朝向/热量/经济/基地与前哨状态、结构化事件、分级伤害归因、逐候选证据链、关键战局切片和四级装配槽位。`public/data/heatmaps` 保存 96 份秒级热力数据，`public/maps` 保存规则手册实场图和官方坐标简图。原始比赛数据库和规则 PDF 不进入本仓库。
 
 本地有原始 SQLite 时，可运行 `python3 scripts/export_replay_data_v3.py` 重建回放数据；`python3 scripts/audit_replay_data.py` 会核对 613 场覆盖、伤害事件、装配计数和文件体积预算。
 

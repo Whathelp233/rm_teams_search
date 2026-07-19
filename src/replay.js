@@ -17,7 +17,8 @@ export function normalizeReplayData(payload) {
     ...effect,
     candidates: inflateRows(effect.candidates || [], payload.candidate_columns || []),
   }))
-  return { ...payload, events, damage_effects: damageEffects }
+  const engagements = inflateRows(payload.engagements || [], payload.engagement_columns || [])
+  return { ...payload, events, damage_effects: damageEffects, engagements }
 }
 
 export function nativeFrameRate(frames = []) {

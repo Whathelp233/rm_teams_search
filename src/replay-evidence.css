@@ -1,0 +1,31 @@
+.engagement-console { margin: 12px 0; padding: 12px; border: 1px solid #263b55; border-radius: 10px; background: #0a1626; }
+.engagement-console .section-head { margin-bottom: 9px; }
+.engagement-console .section-head h3 { margin: 0; }
+.engagement-console .section-head b { color: #f8d66d; }
+.engagement-strip { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 5px; scroll-snap-type: x proximity; }
+.engagement-strip button { display: flex; flex: 0 0 185px; flex-direction: column; gap: 3px; padding: 9px 10px; border: 1px solid #263b55; border-radius: 8px; background: #101d2f; color: #dce8f5; text-align: left; cursor: pointer; scroll-snap-align: start; }
+.engagement-strip button.red { border-left: 3px solid #fb7185; }
+.engagement-strip button.blue { border-left: 3px solid #58d3ff; }
+.engagement-strip button.active { border-color: #f8d66d; background: #17263a; }
+.engagement-strip span, .engagement-strip small { color: #8298b0; font-size: 11px; }
+.damage-confidence-legend > strong { color: #dbeafe; font-size: 11px; }
+.damage-feed > article { border-top: 1px solid #1d3047; }
+.damage-feed > article > button { border-top: 0; }
+.damage-feed details { padding: 0 10px 9px; }
+.damage-feed details summary { cursor: pointer; color: #67e8f9; font-size: 11px; }
+.candidate-table { display: grid; gap: 5px; margin-top: 6px; }
+.candidate-table > span { display: flex; flex-direction: column; padding: 7px; border: 1px solid #263b55; border-radius: 6px; color: #b9c8d9; }
+.candidate-table > span.selected { border-color: #41e1a6; background: #0c2b28; }
+.candidate-table > span.rejected { opacity: .7; }
+.candidate-table small { color: #8298b0; font-size: 10px; }
+.opponent-breakdown { margin-top: 12px; padding-top: 10px; border-top: 1px solid #34445a; }
+.opponent-breakdown summary { cursor: pointer; color: #f8d66d; }
+.opponent-breakdown > div { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+.opponent-breakdown > div > span { display: flex; flex-direction: column; padding: 7px; background: #0b1929; border-radius: 6px; }
+.opponent-breakdown small, .opponent-breakdown p { color: #8298b0; font-size: 10px; }
+.opponent-breakdown p { margin: 8px 0 0; }
+
+@media (max-width: 650px) {
+  .opponent-breakdown > div { grid-template-columns: 1fr; }
+  .engagement-strip button { flex-basis: 165px; }
+}
