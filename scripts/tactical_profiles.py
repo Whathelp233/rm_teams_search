@@ -12,12 +12,12 @@ from pathlib import Path
 SCHEMA = "tactical-profile-1.0.0"
 GROUND_ROLES = {"英雄", "工程", "步兵3", "步兵4", "哨兵"}
 PHASES = [
-    ("opening", "开局 0–90s"),
-    ("outpost", "前哨争夺"),
-    ("transition", "目标转场"),
-    ("siege", "基地攻防"),
-    ("defense", "防守恢复"),
-    ("terminal", "终盘 60s"),
+    ("opening", "开局部署 · 0:00–1:30"),
+    ("outpost", "前哨站攻防"),
+    ("transition", "增益与目标转换"),
+    ("siege", "基地攻坚"),
+    ("defense", "基地防守与回防"),
+    ("terminal", "终局胜负管理 · 最后60秒"),
 ]
 
 
@@ -185,23 +185,23 @@ def template_rows(feature, cuts):
     resource_second = min([value for value in (f["rune"], f["assembly"]) if value is not None], default=None)
     source_count = sum(value > 0 for value in (f["base17"], f["base42"], f["base_dart"]))
     return [
-        ("opening_forward", "opening", "双车以上开局前压", True, f["early_forward_pct"] >= max(18, cuts["early_forward_pct"]) and f["multi_push_seconds"] >= max(5, cuts["multi_push_seconds"]), f["multi_push_seconds"], ["开局形成双车前压", "维持对方半场在场"], f["dominant_roles"], f["dominant_lane"]),
-        ("opening_outpost", "opening", "90秒内形成前哨首压", True, f["first_outpost"] is not None and f["first_outpost"] <= 90, f["first_outpost"], ["进入前哨攻击窗口", "形成首次有效扣血"], f["dominant_roles"], f["dominant_lane"]),
-        ("rune_outpost_chain", "opening", "能量机关后衔接前哨压力", f["rune"] is not None, f["rune"] is not None and f["first_outpost"] is not None and 0 <= f["first_outpost"] - f["rune"] <= 90, f["first_outpost"], ["触发能量机关", "90秒内形成前哨伤害"], f["dominant_roles"], f["dominant_lane"]),
-        ("opening_aerial", "opening", "空中开局火力覆盖", True, f["early_aerial_shots"] >= max(30, cuts["early_aerial_shots"]), 90, ["空中进入持续输出", "地面单位同步推进"], ["空中"] + f["dominant_roles"][:1], f["dominant_lane"]),
-        ("opening_radar", "opening", "90秒内雷达反制", True, f["radar"] is not None and f["radar"] <= 90, f["radar"], ["识别空中威胁", "发起雷达反制"], ["雷达", "空中"], None),
-        ("rapid_outpost_kill", "outpost", "前哨首伤后快速击毁", f["first_outpost"] is not None, f["outpost_kill_duration"] is not None and f["outpost_kill_duration"] <= 180, f["outpost_destroy"], ["形成前哨首伤", "持续压制", "击毁前哨"], f["dominant_roles"], f["dominant_lane"]),
-        ("sustained_17", "outpost", "高频17mm持续压制", True, f["shots17"] >= cuts["shots17"] and f["robot_damage"] >= cuts["robot_damage"], f["first_outpost"], ["建立17mm输出窗口", "维持机器人/前哨压制"], [role for role in ("空中", "哨兵", "步兵3", "步兵4") if f["role_shots"].get(role, 0) > 0][:2], f["dominant_lane"]),
-        ("outpost_base_switch", "transition", "击毁前哨后90秒内转基地", f["outpost_destroy"] is not None, f["outpost_to_base"] is not None and 0 <= f["outpost_to_base"] <= 90, f["first_base"], ["击毁前哨", "完成目标转场", "形成基地首伤"], f["dominant_roles"], f["dominant_lane"]),
-        ("resource_objective", "transition", "资源事件后衔接战略目标", resource_second is not None, resource_second is not None and first_objective is not None and 0 <= first_objective - resource_second <= 90, first_objective, ["能量机关/装配生效", "90秒内形成战略目标伤害"], f["dominant_roles"], f["dominant_lane"]),
-        ("dart_base_combo", "transition", "飞镖命中衔接基地扣血", True, f["base_dart"] > 0 or (f["dart"] is not None and f["first_base"] is not None and abs(f["first_base"] - f["dart"]) <= 15), f["dart"], ["开启飞镖窗口", "飞镖命中", "基地产生扣血"], ["飞镖"], None),
-        ("hero42_siege", "siege", "英雄42mm基地攻城", True, f["base42"] > 0, f["first_base"], ["英雄形成42mm射界", "基地产生42mm扣血"], ["英雄"], f["dominant_lane"]),
-        ("mixed_base_siege", "siege", "多伤害源基地围攻", f["base_damage"] > 0, source_count >= 2, f["first_base"], ["打开基地攻击窗口", "两种以上伤害源叠加"], (["飞镖"] if f["base_dart"] else []) + (["英雄"] if f["base42"] else []) + f["dominant_roles"][:1], f["dominant_lane"]),
-        ("outpost_fallback", "defense", "前哨受击后回撤收缩", f["own_outpost_hit"] is not None, f["response_delta"] is not None and f["response_delta"] <= -.45, f["own_outpost_hit"], ["己方前哨受到首伤", "15秒内阵型向后场收缩"], f["dominant_roles"], "己方前场"),
-        ("base_guard", "defense", "基地受击后近区保护", f["own_base_hit"] is not None, f["base_guard_pct"] is not None and f["base_guard_pct"] >= max(30, cuts["base_guard_pct"]), f["own_base_hit"], ["己方基地受到首伤", "30秒内维持后场保护"], f["dominant_roles"], "己方后场"),
-        ("base_denial", "defense", "前哨受压后保持基地无伤", f["own_outpost_hit"] is not None, f["own_base_damage"] <= 0, f["own_outpost_hit"], ["己方前哨进入风险窗口", "终局基地保持无有效扣血"], f["dominant_roles"], "己方后场"),
-        ("terminal_pressure", "terminal", "终盘保持前场压力", True, f["terminal_forward_pct"] >= 25, max(0, f["duration"] - 60), ["进入最后60秒", "维持对方半场在场"], f["dominant_roles"], f["dominant_lane"]),
-        ("terminal_base_hold", "terminal", "终盘基地高血量保持", True, f["own_base_final_hp"] >= 4000, max(0, f["duration"] - 60), ["进入最后60秒", "基地终局血量保持4000以上"], f["dominant_roles"], "己方后场"),
+        ("opening_forward", "opening", "开局双车越过中线建立前场", True, f["early_forward_pct"] >= max(18, cuts["early_forward_pct"]) and f["multi_push_seconds"] >= max(5, cuts["multi_push_seconds"]), f["multi_push_seconds"], ["英雄/步兵/哨兵从启动区展开", "至少两台地面机器人越过中线", "持续占据对方半场并压缩其通行路线"], f["dominant_roles"], f["dominant_lane"]),
+        ("opening_outpost", "opening", "开局90秒内打出前哨站首伤", True, f["first_outpost"] is not None and f["first_outpost"] <= 90, f["first_outpost"], ["地面单位进入前哨站攻击方向", "建立17mm或42mm有效射界", "在1:30前使对方前哨站首次扣血"], f["dominant_roles"], f["dominant_lane"]),
+        ("rune_outpost_chain", "opening", "取得能量机关增益后压制前哨站", f["rune"] is not None, f["rune"] is not None and f["first_outpost"] is not None and 0 <= f["first_outpost"] - f["rune"] <= 90, f["first_outpost"], ["触发能量机关并取得攻防/热量增益", "增益有效期内推进至前哨站方向", "90秒内使对方前哨站扣血"], f["dominant_roles"], f["dominant_lane"]),
+        ("opening_aerial", "opening", "首轮空中支援覆盖地面推进", True, f["early_aerial_shots"] >= max(30, cuts["early_aerial_shots"]), 90, ["空中机器人进入空中支援状态", "以17mm火力压制地面机器人或前哨站", "地面单位借空中火力越过中线"], ["空中"] + f["dominant_roles"][:1], f["dominant_lane"]),
+        ("opening_radar", "opening", "开局90秒内使用雷达反制空中支援", True, f["radar"] is not None and f["radar"] <= 90, f["radar"], ["雷达识别对方空中机器人位置", "确认对方进入空中支援", "在1:30前发起雷达反制"], ["雷达", "空中"], None),
+        ("rapid_outpost_kill", "outpost", "前哨站首伤后180秒内完成击毁", f["first_outpost"] is not None, f["outpost_kill_duration"] is not None and f["outpost_kill_duration"] <= 180, f["outpost_destroy"], ["使对方前哨站首次扣血", "持续保持17mm/42mm输出或接入飞镖伤害", "将前哨站血量降至0，解除对方基地无敌状态"], f["dominant_roles"], f["dominant_lane"]),
+        ("sustained_17", "outpost", "以17mm火力持续压制机器人与前哨站", True, f["shots17"] >= cuts["shots17"] and f["robot_damage"] >= cuts["robot_damage"], f["first_outpost"], ["步兵、哨兵或空中机器人建立17mm射界", "控制枪口热量并保持连续发弹", "压低守方机器人血量并争取前哨站输出时间"], [role for role in ("空中", "哨兵", "步兵3", "步兵4") if f["role_shots"].get(role, 0) > 0][:2], f["dominant_lane"]),
+        ("outpost_base_switch", "transition", "击毁前哨站后90秒内转火基地", f["outpost_destroy"] is not None, f["outpost_to_base"] is not None and 0 <= f["outpost_to_base"] <= 90, f["first_base"], ["击毁对方前哨站并解除基地无敌", "从前哨站攻击方向转入基地攻击方向", "90秒内使对方基地首次扣血"], f["dominant_roles"], f["dominant_lane"]),
+        ("resource_objective", "transition", "把能量机关或装配收益转化为目标伤害", resource_second is not None, resource_second is not None and first_objective is not None and 0 <= first_objective - resource_second <= 90, first_objective, ["取得能量机关增益或完成装配", "在增益/装备有效窗口内组织推进", "90秒内使前哨站或基地扣血"], f["dominant_roles"], f["dominant_lane"]),
+        ("dart_base_combo", "transition", "飞镖命中后衔接基地攻击", True, f["base_dart"] > 0 or (f["dart"] is not None and f["first_base"] is not None and abs(f["first_base"] - f["dart"]) <= 15), f["dart"], ["在飞镖闸门开启后进入30秒发射窗口", "飞镖命中基地目标或触发对应战场效果", "地面单位利用基地攻击窗口继续扣减基地血量"], ["飞镖"], None),
+        ("hero42_siege", "siege", "英雄以42mm弹丸攻坚基地", True, f["base42"] > 0, f["first_base"], ["在对方前哨站被击毁后进入基地攻击方向", "英雄建立42mm有效射界", "以42mm弹丸直接扣减基地血量"], ["英雄"], f["dominant_lane"]),
+        ("mixed_base_siege", "siege", "17mm、42mm与飞镖协同攻坚基地", f["base_damage"] > 0, source_count >= 2, f["first_base"], ["击毁前哨站并打开基地攻击条件", "至少两类伤害来源先后或同时命中基地", "持续压低基地血量，争取直接击毁或终局血量优势"], (["飞镖"] if f["base_dart"] else []) + (["英雄"] if f["base42"] else []) + f["dominant_roles"][:1], f["dominant_lane"]),
+        ("outpost_fallback", "defense", "前哨站受击后收缩防线", f["own_outpost_hit"] is not None, f["response_delta"] is not None and f["response_delta"] <= -.45, f["own_outpost_hit"], ["己方前哨站出现首次扣血", "15秒内地面阵型向己方半场收缩", "保护前哨站攻击方向并保留基地回防路线"], f["dominant_roles"], "己方前场"),
+        ("base_guard", "defense", "基地受击后建立近区保护", f["own_base_hit"] is not None, f["base_guard_pct"] is not None and f["base_guard_pct"] >= max(30, cuts["base_guard_pct"]), f["own_base_hit"], ["己方基地出现首次扣血", "地面单位在30秒内回到己方后场", "驱离基地攻击方向上的持续输出单位"], f["dominant_roles"], "己方后场"),
+        ("base_denial", "defense", "前哨站受压后仍保持基地无伤", f["own_outpost_hit"] is not None, f["own_base_damage"] <= 0, f["own_outpost_hit"], ["己方前哨站进入受击状态", "守住前哨站或封锁前哨站至基地的转场路线", "全局结束时基地未产生有效扣血"], f["dominant_roles"], "己方后场"),
+        ("terminal_pressure", "terminal", "最后60秒保持对方半场压力", True, f["terminal_forward_pct"] >= 25, max(0, f["duration"] - 60), ["进入最后60秒并核对基地/前哨站血量", "地面单位继续占据对方半场", "争取基地血量、前哨站状态或总攻击伤害优势"], f["dominant_roles"], f["dominant_lane"]),
+        ("terminal_base_hold", "terminal", "最后60秒守住4000以上基地血量", True, f["own_base_final_hp"] >= 4000, max(0, f["duration"] - 60), ["进入最后60秒并确认己方基地血量领先条件", "封锁基地攻击方向，减少无收益换血", "全局结束时基地保有4000以上血量"], f["dominant_roles"], "己方后场"),
     ]
 
 
@@ -255,7 +255,7 @@ def aggregate_pattern(template_id, phase, label, rows):
         "rate": rounded(rate, 3), "interval80": [rounded(interval[0], 3), rounded(interval[1], 3)],
         "timing": {"median": rounded(quantile(timings, .5)), "p25": rounded(quantile(timings, .25)), "p75": rounded(quantile(timings, .75))},
         "roles": [name for name, _ in roles.most_common(3)], "zones": [name for name, _ in zones.most_common(2)],
-        "steps": observed_rows[0]["steps"] if observed_rows else eligible_rows[0]["steps"] if eligible_rows else [],
+        "steps": observed_rows[0]["steps"] if observed_rows else eligible_rows[0]["steps"] if eligible_rows else rows[0]["steps"] if rows else [],
         "side_split": side_split,
         "association": {
             "with_win_pct": rounded(with_wins * 100 / observed, 1) if observed else None,
@@ -266,7 +266,7 @@ def aggregate_pattern(template_id, phase, label, rows):
         },
         "evidence": [{
             "game_id": row["feature"]["game_id"], "opponent": row["feature"]["opponent"], "side": row["feature"]["side"],
-            "won": row["feature"]["won"], "timing": rounded(row["timing"]), "steps": row["steps"],
+            "won": row["feature"]["won"], "timing": rounded(row["timing"]),
         } for row in observed_rows[:8]],
         "counterexamples": [{
             "game_id": row["feature"]["game_id"], "opponent": row["feature"]["opponent"], "side": row["feature"]["side"], "won": row["feature"]["won"],

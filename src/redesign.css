@@ -6,6 +6,10 @@
   --space-panel:20px;--space-page:28px;--row-height:56px;--motion-fast:150ms;--motion-page:220ms;
   color-scheme:dark;
 }
+
+.chain-title,.counter-order-title{display:block;margin:0 0 10px;color:#8fc9ff;font-size:11px;letter-spacing:.05em}
+.counter-order-title{padding:0 16px}
+.chain-steps li,.counter-actions li{line-height:1.55}
 *{scrollbar-color:#34465f transparent;scrollbar-width:thin}
 html{background:var(--bg)}
 body{background:radial-gradient(circle at 65% -20%,#14223a 0,transparent 34%),var(--bg);color:var(--text);min-width:320px}
