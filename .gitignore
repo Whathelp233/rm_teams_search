@@ -1,5 +1,8 @@
 node_modules/
 dist/
+public/data/v4/
+test-results/
+playwright-report/
 __pycache__/
 *.log
 .DS_Store

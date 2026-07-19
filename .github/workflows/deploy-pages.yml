@@ -41,10 +41,19 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Install UI test browsers
+        run: npx playwright install --with-deps chromium firefox
+
+      - name: Browser regression
+        run: npm run test:ui
+
       - name: Build
         env:
           VITE_BASE_PATH: /rm_teams_search/
         run: npm run build
+
+      - name: Check performance budgets
+        run: npm run check:bundle
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5

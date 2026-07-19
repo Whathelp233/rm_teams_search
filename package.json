@@ -4,9 +4,12 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "test": "node --test && python3 -m unittest discover -s test -p 'test_*.py' && python3 scripts/audit_scores.py && python3 scripts/cross_validate_scores.py --fixture-only && python3 scripts/audit_role_data.py"
+    "prepare:data": "python3 scripts/build_web_data_v4.py",
+    "dev": "npm run prepare:data && vite",
+    "build": "npm run prepare:data && vite build",
+    "check:bundle": "node scripts/check_bundle_budget.mjs",
+    "test:ui": "playwright test",
+    "test": "npm run prepare:data && node --test && python3 -m unittest discover -s test -p 'test_*.py' && python3 scripts/audit_scores.py && python3 scripts/cross_validate_scores.py --fixture-only && python3 scripts/audit_role_data.py"
   },
   "dependencies": {
     "@vitejs/plugin-vue": "^5.2.4",
@@ -14,5 +17,7 @@
     "vite": "^6.1.0",
     "vue": "^3.5.13"
   },
-  "devDependencies": {}
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
 }
