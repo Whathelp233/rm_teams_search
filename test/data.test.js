@@ -11,6 +11,12 @@ test('all published teams use complete score schema 4.0', () => {
   assert.equal(index.schema_version, '4.0.0')
   assert.equal(index.data_version, 'score-4.0.0')
   assert.equal(index.teams.length, 96)
+  assert.deepEqual(index.matchup_validation, {
+    model_version: 'matchup-4.4.0',
+    game: { samples: 276, brier: .212452, accuracy: .684783 },
+    series: { samples: 112, brier: .181564, accuracy: .758929, ece: .049078, bo3_samples: 106, bo5_samples: 6, method: 'iid_binomial', temperature: 1 },
+    bo5_data_limited: true,
+  })
   const dimensions = ['firepower', 'objective', 'spatial', 'defense', 'resource', 'adaptability']
   const tacticalWeights = { firepower: .08, objective: .56, spatial: .12, defense: .11, resource: .12, adaptability: .01 }
   const componentWeights = {
