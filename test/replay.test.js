@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { activeDamageEffects, deriveDamageEffects, interpolatedFrame, nativeFrameRate } from '../src/replay.js'
+import { activeDamageEffects, deriveDamageEffects, deriveShotEffects, interpolatedFrame, nativeFrameRate } from '../src/replay.js'
 
 const row = (robot, x, hp, valid = 1, shots17 = 0) => [robot, x, 5, hp, 200, 0, 0, 0, shots17, 0, valid]
 
@@ -19,8 +19,19 @@ test('damage effects classify attribution confidence without inventing damage', 
   assert.equal(effects.length, 1)
   assert.equal(effects[0].damage, 20)
   assert.equal(effects[0].confidence, 'high')
+  assert.equal(effects[0].source, undefined)
   assert.equal(activeDamageEffects(effects, 2.4).length, 1)
   assert.equal(activeDamageEffects(effects, 3).length, 0)
+})
+
+test('shot effects stay at the firing robot and never invent a target trajectory', () => {
+  const data = { frames: [[2, [row(0, 2, 200, 1, 3), [1, 8, 5, 200, 200, 0, 0, 0, 0, 1, 1]]]] }
+  const effects = deriveShotEffects(data)
+  assert.deepEqual(effects, [
+    { id: '2-0', second: 2, robot: 0, x: 2, y: 5, shots17: 3, shots42: 0 },
+    { id: '2-1', second: 2, robot: 1, x: 8, y: 5, shots17: 0, shots42: 1 },
+  ])
+  assert.ok(effects.every(effect => !('target' in effect)))
 })
 
 test('penalty health loss is excluded from simulated combat impacts', () => {
