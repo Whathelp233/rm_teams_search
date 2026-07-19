@@ -21,16 +21,22 @@ def objects(rows, columns):
 def main():
     paths = sorted(GAMES.glob("*.json"))
     assert len(paths) == 613, f"expected 613 games, found {len(paths)}"
-    sizes, assembly, hits = [], Counter(), Counter()
+    sizes, assembly, hits, engagements, confidence = [], Counter(), Counter(), Counter(), Counter()
     for path in paths:
         payload = json.loads(path.read_text(encoding="utf-8"))
-        assert payload["schema_version"] == "3.0.0"
+        assert payload["schema_version"] == "3.1.0"
         assert payload["source_cadence_hz"] == 1
         assert len(payload["facilities"]) == 4
         assert payload["frame_columns"][:11] == ["robot", "x", "y", "hp", "max_hp", "power", "heat17", "heat42", "shots17", "shots42", "valid"]
         assert {"z", "yaw", "heat17_limit", "heat42_limit", "vulnerable"}.issubset(payload["frame_columns"])
         events = objects(payload["events"], payload["event_columns"])
         effects = objects(payload["damage_effects"], payload["damage_columns"])
+        segments = objects(payload["engagements"], payload["engagement_columns"])
+        assert payload["engagement_columns"][:5] == ["id", "start_sec", "end_sec", "focus_sec", "type"]
+        for segment in segments:
+            assert 0 <= segment["start_sec"] <= segment["focus_sec"] <= segment["end_sec"] <= payload["game"]["duration_sec"]
+            assert segment["basis"] and segment["confidence"] in ("high", "medium", "low")
+            engagements[segment["type"]] += 1
         for event in events:
             if event["type"] == "装配成功":
                 assert event["side"] in ("红", "蓝") and event["team"]
@@ -39,11 +45,16 @@ def main():
                 assembly[event["assembly_level"]] += 1
         for effect in effects:
             hits[effect["category"]] += 1
+            confidence[effect["confidence"]] += 1
+            candidates = objects(effect["candidates"], payload["candidate_columns"])
+            selected = [candidate for candidate in candidates if candidate["verdict"] == "selected"]
+            assert len(selected) <= 1
             if effect["kind"] in ("collision", "penalty", "dart"):
                 assert effect["shooter"] is None and effect["source_x"] is None
             if effect["kind"] == "projectile" and effect["confidence"] == "high":
                 assert effect["shooter"] is not None and effect["source_x"] is not None
                 assert effect["angle_error"] is not None
+                assert effect["attribution_score"] is not None and selected
         sizes.append(path.stat().st_size)
     assert assembly == Counter({1: 884, 2: 884, 3: 626}), assembly
     assert assembly[4] == 0
@@ -57,7 +68,8 @@ def main():
         raw_hits = Counter(dict(connection.execute("SELECT 类别,COUNT(*) FROM events WHERE 事件类型='受击' GROUP BY 类别")))
         connection.close()
         assert hits == raw_hits, f"hit event mismatch: exported={hits} raw={raw_hits}"
-    print(f"replay audit: {len(paths)} games; assembly={dict(assembly)}; p95={p95}; max={sizes[-1]}")
+    assert engagements["前哨攻坚"] and engagements["基地攻坚"] and engagements["集中交战"]
+    print(f"replay audit: {len(paths)} games; assembly={dict(assembly)}; engagements={dict(engagements)}; confidence={dict(confidence)}; p95={p95}; max={sizes[-1]}")
 
 
 if __name__ == "__main__":

@@ -87,6 +87,11 @@ def main():
             failures.append(f"{team['team']} transparent opponent score must not duplicate BT strength correction")
         if opponent.get("direct_matches_excluded") is not True:
             failures.append(f"{team['team']} opponent score does not exclude direct meetings")
+        breakdown = opponent.get("breakdown", [])
+        if len(breakdown) != opponent.get("unique_opponents"):
+            failures.append(f"{team['team']} opponent evidence does not cover every unique opponent")
+        if any(item.get("opponent_other_games", -1) < item.get("opponent_other_wins", 0) for item in breakdown):
+            failures.append(f"{team['team']} opponent evidence has impossible records")
     for region in ("南部赛区", "东部赛区", "北部赛区"):
         regional = [team for team in teams if team["summary"]["region"] == region]
         strength = [team["strength_analysis"]["score"] for team in regional]

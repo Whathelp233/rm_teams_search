@@ -33,6 +33,22 @@ class ScoringV3Test(unittest.TestCase):
         )
         self.assertEqual(result["a"]["score"], 50.0)
 
+    def test_opponent_score_excludes_direct_games_and_exposes_breakdown(self):
+        payloads = {
+            "甲": (None, {"matches": [{"opponent": "乙", "won": True}]}),
+            "乙": (None, {"matches": [
+                {"opponent": "甲", "won": False},
+                {"opponent": "丙", "won": True},
+            ]}),
+            "丙": (None, {"matches": [{"opponent": "乙", "won": False}]}),
+        }
+        result = scoring.build_opponent_scores(payloads)["甲"]
+        self.assertTrue(result["direct_matches_excluded"])
+        self.assertFalse(result["enters_strength"])
+        self.assertEqual(result["breakdown"][0]["opponent"], "乙")
+        self.assertEqual(result["breakdown"][0]["opponent_other_games"], 1)
+        self.assertEqual(result["breakdown"][0]["opponent_other_wins"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

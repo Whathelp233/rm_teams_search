@@ -33,6 +33,8 @@ test('match replay exposes layered telemetry, attributed trajectories and four-l
   await expect(page.getByText('中：兵种唯一或几何候选明显领先')).toBeVisible()
   await expect(page.getByText('显示低置信候选')).toBeVisible()
   await expect(page.getByText('完整连线是分级推定；撞击、判罚和飞镖不会伪造射手弹道')).toBeVisible()
+  await expect(page.getByText(/已归因 \d+\/\d+/)).toBeVisible()
+  await expect(page.locator('.engagement-strip button')).not.toHaveCount(0)
   await expect(page.locator('.replay-scoreboard article')).toHaveCount(2)
   await expect(page.locator('.assembly-levels > div')).toHaveCount(8)
   await expect(page.getByText('当前数据未观测到四级装配成功')).toHaveCount(2)
@@ -44,6 +46,11 @@ test('match replay exposes layered telemetry, attributed trajectories and four-l
   await expect(page.locator('.damage-effect')).not.toHaveCount(0)
   await expect(page.locator('.damage-effect .attributed-path')).not.toHaveCount(0)
   await expect(page.locator('.damage-feed button')).not.toHaveCount(0)
+  const candidateEvidence = page.locator('.damage-feed details').first()
+  if (await candidateEvidence.count()) {
+    await candidateEvidence.locator('summary').click()
+    await expect(candidateEvidence.locator('.candidate-table > span').first()).toContainText(/分/)
+  }
   await page.locator('.replay-robot').first().click()
   await expect(page.locator('.replay-telemetry').getByText('17mm 热量')).toBeVisible()
 })
@@ -59,6 +66,7 @@ test('tactics expose concrete match values in addition to scores', async ({ page
   await expect(page.getByText('净输出/对手预期')).toBeVisible()
   await expect(page.getByText('各分项有效样本 20 局')).toBeVisible()
   await expect(page.getByRole('heading', { name: '分阶段打法' })).toBeVisible()
+  await expect(page.getByText('逐个对手校正证据', { exact: false })).toBeVisible()
   await expect(page.locator('.tactical-mode-panel .section-head').getByText(/\d+局 · \d+个对手 · 17类打法/)).toBeVisible()
   const firstPattern = page.locator('.tactical-pattern').first()
   await expect(firstPattern.getByText(/局采用 · 覆盖\d+个对手/)).toBeVisible()

@@ -118,9 +118,9 @@ def build_opponent_scores(payloads):
         for match in matches:
             records[team]["by_opponent"][match["opponent"]].append(bool(match.get("won")))
 
-    first_order = {}
+    first_order, opponent_rates = {}, {}
     for team, record in records.items():
-        rates = []
+        rates, details = [], []
         for opponent in record["by_opponent"]:
             if opponent not in records:
                 continue
@@ -128,8 +128,17 @@ def build_opponent_scores(payloads):
             direct = opponent_record["by_opponent"].get(team, [])
             other_games = opponent_record["games"] - len(direct)
             other_wins = opponent_record["wins"] - sum(direct)
-            rates.append((other_wins + 1.0) / (other_games + 2.0))
+            adjusted = (other_wins + 1.0) / (other_games + 2.0)
+            rates.append(adjusted)
+            details.append({
+                "opponent": opponent,
+                "meetings": len(record["by_opponent"][opponent]),
+                "opponent_other_games": other_games,
+                "opponent_other_wins": other_wins,
+                "adjusted_win_rate_pct": rounded(adjusted * 100.0),
+            })
         first_order[team] = mean(rates, 0.5)
+        opponent_rates[team] = details
 
     raw_scores = {}
     for team, record in records.items():
@@ -150,7 +159,16 @@ def build_opponent_scores(payloads):
             "direct_matches_excluded": True,
             "enters_strength": False,
             "strength_coefficient": 0.0,
-            "method": "75% direct-opponent adjusted win rate + 25% second-order opponent rate; unique opponents; Beta(1,1) prior",
+            "correction_path": "regularized Bradley-Terry result_score",
+            "breakdown": [
+                {
+                    **detail,
+                    "second_order_pct": rounded(first_order.get(detail["opponent"], 0.5) * 100.0),
+                    "display_weight_pct": rounded(100.0 / max(1, sample)),
+                }
+                for detail in sorted(opponent_rates[team], key=lambda item: (-item["adjusted_win_rate_pct"], item["opponent"]))
+            ],
+            "method": "75% direct-opponent adjusted win rate + 25% second-order opponent rate; unique opponents; Beta(1,1) prior. The display score is not added again because result_score already applies opponent correction through Bradley-Terry.",
         }
     return scores
 
@@ -660,8 +678,8 @@ def main():
     strength_scores = {team: 0.90 * tactical_scores[team] + 0.10 * result_scores[team] for team in teams}
     overall_ranks = {team: 1 + sum(strength_scores[other] > strength_scores[team] for other in teams) for team in teams}
 
-    index["schema_version"] = "3.9.0"
-    index["data_version"] = "score-3.9.0"
+    index["schema_version"] = "3.9.1"
+    index["data_version"] = "score-3.9.1"
     index["placement_method"] = {
         "format": "参赛手册规定的16进8、8进4、半决赛、季军争夺战和冠军争夺战，结合数据库实际胜负推导",
         "sources": [
@@ -670,7 +688,7 @@ def main():
             "RMUC 2026 北部赛区参赛手册 V2.0.0",
         ],
     }
-    index["scoring_notice"] = "六维3.9：按规则5.8胜负优先级设置权重先验，再以逐赛区、逐时间窗回测约束；基地/前哨、攻击伤害与剩余血量对应的直接胜负维度合计74%"
+    index["scoring_notice"] = "六维3.9.1：按规则5.8胜负优先级设置权重先验；赛果通过正则化 Bradley-Terry 按对手校正，对手分仅展开赛程证据，避免重复加分"
     for team, (path, payload) in payloads.items():
         scores = {name: analyses[name][team]["score"] for name in COMPONENT_WEIGHTS}
         tactical, result, strength = tactical_scores[team], result_scores[team], strength_scores[team]
@@ -678,7 +696,7 @@ def main():
         invalid_points = sum(float(match.get("invalid_position_points") or 0) for match in payload["matches"])
         position_coverage = position_points / max(1.0, position_points + invalid_points)
         confidence = 100.0 * games_by_team[team] / (games_by_team[team] + 8.0) * math.sqrt(position_coverage)
-        payload["schema_version"] = "3.9.0"; payload["data_version"] = "score-3.9.0"
+        payload["schema_version"] = "3.9.1"; payload["data_version"] = "score-3.9.1"
         payload.pop("consistency_analysis", None)
         payload["scores"] = scores
         payload["dimension_ranks"] = dimension_ranks[team]
@@ -691,7 +709,7 @@ def main():
             method = "terminal base/outpost/mobile HP and clean damage exchange, blended with typical/downside aggregation" if name == "defense" else "team fact percentile with games/(games+6) shrinkage"
             if name == "adaptability":
                 method = "paired-condition transfer and residual response with component-specific evidence shrinkage"
-            detail.update({"version": "3.9.0", "method": method})
+            detail.update({"version": "3.9.1", "method": method})
             payload[f"{name}_analysis"] = detail
         payload["defense_analysis"]["excluded"] = excluded[team]
         payload["score_confidence"] = {
@@ -703,8 +721,10 @@ def main():
             "region_rank": opponent_region_ranks[team], "region_size": opponent_region_sizes[team],
         }
         payload["strength_analysis"] = {
-            "version": "3.9.0", "score": rounded(strength), "tactical_score": rounded(tactical),
+            "version": "3.9.1", "score": rounded(strength), "tactical_score": rounded(tactical),
             "result_score": rounded(result), "schedule_rating": rounded(ratings[team], 3),
+            "raw_win_rate_pct": rounded(100.0 * sum(bool(match.get("won")) for match in payload["matches"]) / max(1, len(payload["matches"]))),
+            "opponent_adjustment": "result_score is estimated jointly from every opponent and red/blue side; transparent opponent score is audit evidence and is not added twice",
             "tactical_weight": 0.90, "result_weight": 0.10,
             "tactical_dimension_weights": DIMENSION_WEIGHTS,
             "victory_rule_alignment": {
@@ -726,7 +746,7 @@ def main():
         listing["placement"] = placements.get(team)
         compact_write(path, payload)
     compact_write(index_path, index)
-    print(f"recalculated {len(teams)} teams with score schema 3.9.0")
+    print(f"recalculated {len(teams)} teams with score schema 3.9.1")
 
 
 if __name__ == "__main__":

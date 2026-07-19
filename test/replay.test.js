@@ -40,10 +40,13 @@ test('v3 compact evidence expands without changing confidence or candidates', ()
     damage_columns: ['id', 'second', 'confidence', 'candidates'],
     candidate_columns: ['robot_id', 'angle_error'],
     damage_effects: [['hit-1', 25, 'medium', [[103, 7.5]]]],
+    engagement_columns: ['id', 'start_sec', 'end_sec', 'type'],
+    engagements: [['fight-1', 20, 28, '集中交战']],
   })
   assert.deepEqual(payload.events[0], { second: 120, type: '装配成功', team: '红队' })
   assert.equal(payload.damage_effects[0].confidence, 'medium')
   assert.deepEqual(payload.damage_effects[0].candidates[0], { robot_id: 103, angle_error: 7.5 })
+  assert.deepEqual(payload.engagements[0], { id: 'fight-1', start_sec: 20, end_sec: 28, type: '集中交战' })
 })
 
 test('change-point team frames resolve the latest scoreboard state', () => {
