@@ -23,6 +23,7 @@ DB = ROOT.parent / "sql" / "rmuc_2026_region_dataset.sqlite"
 FIXTURE = ROOT / "test" / "fixtures" / "rolling_score_folds.json"
 REGIONS = ("南部赛区", "东部赛区", "北部赛区")
 FOLDS = ((0.55, 0.70), (0.70, 0.85), (0.85, 1.00))
+RECENT_SERIES_WINDOWS = (3, 5)
 RELEASE_RESULT_WEIGHTS = {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0}
 RELEASE_SCALES = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0}
 RELEASE_STAGE_SCALE_MULTIPLIERS = {
@@ -340,7 +341,7 @@ def load_source():
     return index, payloads, regional
 
 
-def score_fold(index, payloads, train_ids, directory):
+def score_fold(index, payloads, train_ids, directory, series_window=None):
     data = directory / "data"
     teams_dir = data / "teams"
     teams_dir.mkdir(parents=True)
@@ -348,7 +349,19 @@ def score_fold(index, payloads, train_ids, directory):
     counts = Counter()
     for team, (slug, payload) in payloads.items():
         filtered = dict(payload)
-        filtered["matches"] = [match for match in payload["matches"] if match["game_id"] in train_ids]
+        available = sorted(
+            (match for match in payload["matches"] if match["game_id"] in train_ids),
+            key=lambda match: (match["started_at"], int(match["match_no"]), int(match["round_no"])),
+        )
+        if series_window is not None:
+            ordered_series = []
+            for match in available:
+                key = (match["region"], int(match["match_no"]))
+                if key not in ordered_series:
+                    ordered_series.append(key)
+            retained = set(ordered_series[-series_window:])
+            available = [match for match in available if (match["region"], int(match["match_no"])) in retained]
+        filtered["matches"] = available
         counts[team] = len(filtered["matches"])
         (teams_dir / f"{slug}.json").write_text(json.dumps(filtered, ensure_ascii=False), encoding="utf-8")
     subprocess.run(
@@ -384,6 +397,12 @@ def build_records():
                 tests.extend(games[train_end:test_end])
             fold_dir = root / f"fold-{fold_number}"
             scored, counts = score_fold(index, payloads, train_ids, fold_dir)
+            recent_scored = {
+                window: score_fold(
+                    index, payloads, train_ids, root / f"fold-{fold_number}-recent-{window}", window
+                )[0]
+                for window in RECENT_SERIES_WINDOWS
+            }
             eligible = [game for game in tests if counts[game["primary"]] >= 3 and counts[game["opponent"]] >= 3]
             for game in eligible:
                 first, second = scored[game["primary"]], scored[game["opponent"]]
@@ -394,9 +413,20 @@ def build_records():
                 ]
                 records.append({
                     "fold": fold_number, "region": game["region"], "won": game["won"],
+                    "primary": game["primary"], "opponent": game["opponent"],
                     "side": game["side"], "stage": game["stage"],
                     "match_no": game["match_no"], "round_no": game["round_no"],
                     "dimension_diff": {dimension: round(first["scores"][dimension] - second["scores"][dimension], 3) for dimension in DIMENSION_WEIGHTS},
+                    "recent_dimension_diff": {
+                        str(window): {
+                            dimension: round(
+                                recent_scored[window][game["primary"]]["scores"][dimension]
+                                - recent_scored[window][game["opponent"]]["scores"][dimension], 3
+                            )
+                            for dimension in DIMENSION_WEIGHTS
+                        }
+                        for window in RECENT_SERIES_WINDOWS
+                    },
                     "component_diff": {
                         dimension: {
                             component: round(value - second["components"][dimension][component], 3)
@@ -418,11 +448,11 @@ def main():
         records = build_records()
         if args.write_fixture:
             FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-            FIXTURE.write_text(json.dumps({"schema_version": "4.1.0", "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            FIXTURE.write_text(json.dumps({"schema_version": "4.2.0", "recent_series_windows": RECENT_SERIES_WINDOWS, "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     else:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("schema_version") != "4.1.0":
-            raise SystemExit("rolling score fixture does not match score schema 4.1.0")
+        if fixture.get("schema_version") != "4.2.0" or tuple(fixture.get("recent_series_windows", ())) != RECENT_SERIES_WINDOWS:
+            raise SystemExit("rolling score fixture does not match score schema 4.2.0")
         records = fixture["records"]
 
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
@@ -448,7 +478,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
     failures = []
     for region, weights in RELEASE_DIMENSION_WEIGHTS.items():
         if not math.isclose(sum(weights.values()), 1.0, abs_tol=1e-12):
@@ -773,6 +803,93 @@ def main():
         }
         if supported:
             failures.append(f"{region} has a statistically supported regional weight transfer; release review is required")
+
+    # Test whether recent tactical form adds predictive information beyond the
+    # full-history score. Windows are defined in official series rather than
+    # games, so a long BO3/BO5 cannot receive extra temporal weight. Every
+    # candidate uses only series available before the predicted game.
+    for region in REGIONS:
+        regional_records = [record for record in records if record["region"] == region]
+        baseline_probability = lambda record, region=region: probability(
+            release_strength_diff(record), 0.0, region, record.get("stage")
+        )
+        baseline_by_fold = defaultdict(list)
+        for record in regional_records:
+            baseline_by_fold[record["fold"]].append((baseline_probability(record), record["won"]))
+        baseline_folds = {
+            str(fold): metrics(baseline_by_fold[fold]) for fold in range(1, len(FOLDS) + 1)
+        }
+        baseline_overall = metrics([
+            row for fold in range(1, len(FOLDS) + 1) for row in baseline_by_fold[fold]
+        ])
+        candidates = []
+        for window in RECENT_SERIES_WINDOWS:
+            for alpha in (0.10, 0.20, 0.30, 0.40, 0.50):
+                def candidate_probability(record, window=window, alpha=alpha, region=region):
+                    recent_tactical = release_tactical_diff(record["recent_dimension_diff"][str(window)], region)
+                    full_tactical = release_tactical_diff(record["dimension_diff"], region)
+                    tactical = (1.0 - alpha) * full_tactical + alpha * recent_tactical
+                    result_weight = release_result_weight(region)
+                    difference = (1.0 - result_weight) * tactical + result_weight * record["result_diff"]
+                    return probability(difference, 0.0, region, record.get("stage"))
+
+                by_fold, by_stage = defaultdict(list), defaultdict(list)
+                for record in regional_records:
+                    row = (candidate_probability(record), record["won"])
+                    by_fold[record["fold"]].append(row)
+                    by_stage[record["stage"]].append(row)
+                folds = {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)}
+                overall = metrics([row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]])
+                brier_deltas = [
+                    folds[str(fold)]["brier"] - baseline_folds[str(fold)]["brier"]
+                    for fold in range(1, len(FOLDS) + 1)
+                ]
+                accuracy_deltas = [
+                    folds[str(fold)]["accuracy"] - baseline_folds[str(fold)]["accuracy"]
+                    for fold in range(1, len(FOLDS) + 1)
+                ]
+                candidates.append({
+                    "window_series": window, "recent_weight": alpha,
+                    "overall": overall, "folds": folds,
+                    "stages": {stage: metrics(rows) for stage, rows in by_stage.items()},
+                    "overall_brier_delta": overall["brier"] - baseline_overall["brier"],
+                    "max_fold_brier_delta": max(brier_deltas),
+                    "min_fold_accuracy_delta": min(accuracy_deltas),
+                    "stable_all_folds": max(brier_deltas) <= 1e-12 and min(accuracy_deltas) >= -1e-12,
+                })
+        candidates.sort(key=lambda item: (item["max_fold_brier_delta"], item["overall_brier_delta"]))
+        stable = [item for item in candidates if item["stable_all_folds"]]
+        best = min(stable, key=lambda item: item["overall_brier_delta"], default=None)
+        bootstrap = None
+        supported = False
+        if best:
+            window, alpha = best["window_series"], best["recent_weight"]
+
+            def selected_probability(record, window=window, alpha=alpha, region=region):
+                recent_tactical = release_tactical_diff(record["recent_dimension_diff"][str(window)], region)
+                full_tactical = release_tactical_diff(record["dimension_diff"], region)
+                tactical = (1.0 - alpha) * full_tactical + alpha * recent_tactical
+                result_weight = release_result_weight(region)
+                difference = (1.0 - result_weight) * tactical + result_weight * record["result_diff"]
+                return probability(difference, 0.0, region, record.get("stage"))
+
+            bootstrap = clustered_probability_delta(
+                records, region, baseline_probability, selected_probability
+            )
+            supported = (
+                best["overall_brier_delta"] <= -0.001
+                and bootstrap["probability_candidate_improves"] >= 0.975
+                and bootstrap["confidence_interval_95"][1] < 0
+            )
+        report["temporal_form_validation"][region] = {
+            "baseline": {"overall": baseline_overall, "folds": baseline_folds},
+            "candidate_count": len(candidates), "stable_candidates": len(stable),
+            "best_stable_candidate": best, "best_by_worst_fold": candidates[:5],
+            "clustered_bootstrap": bootstrap, "statistically_supported": supported,
+            "decision": "review_for_release" if supported else "retain_full_history",
+        }
+        if supported:
+            failures.append(f"{region} has statistically supported recent-form weight; release review is required")
 
     def correction_profile(region, transform):
         by_fold = defaultdict(list)
