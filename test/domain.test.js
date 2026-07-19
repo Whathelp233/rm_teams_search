@@ -232,6 +232,21 @@ test('cross-region matchup stays exploratory and exposes a wider interval', () =
   assert.ok(cross.interval[1] - cross.interval[0] >= 30)
 })
 
+test('regional matchup intervals cover rolling calibration drift', () => {
+  const south = matchupEstimate(
+    { ...strongTeam, summary: { ...strongTeam.summary, region: '南部赛区' } },
+    { ...weakerTeam, summary: { ...weakerTeam.summary, region: '南部赛区' } },
+  )
+  assert.equal(south.foldEcePct, 11.1)
+  assert.equal(south.modelMargin, 12)
+  const east = matchupEstimate(
+    { ...strongTeam, summary: { ...strongTeam.summary, region: '东部赛区' } },
+    { ...weakerTeam, summary: { ...weakerTeam.summary, region: '东部赛区' } },
+  )
+  assert.equal(east.foldEcePct, 12.2)
+  assert.equal(east.modelMargin, 13)
+})
+
 test('role facts rank nullable metrics without treating not-applicable as zero', () => {
   const teams = [
     { team: '乙', summary: { availability_pct: 80 } },

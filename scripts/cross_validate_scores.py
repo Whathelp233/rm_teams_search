@@ -24,6 +24,7 @@ REGIONS = ("南部赛区", "东部赛区", "北部赛区")
 FOLDS = ((0.55, 0.70), (0.70, 0.85), (0.85, 1.00))
 RELEASE_RESULT_WEIGHTS = {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0}
 RELEASE_SCALES = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0}
+RELEASE_UNCERTAINTY_FLOORS = {"南部赛区": 12.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0}
 RELEASE_3_8_BASELINE = {
     "overall": {"brier": 0.2271718878310605, "accuracy": 0.6413043478260869},
     "regions": {
@@ -220,6 +221,7 @@ def main():
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
     observations = defaultdict(list)
     fold_rows = defaultdict(list)
+    regional_fold_rows = defaultdict(list)
     for record in records:
         dimension_diff = record["dimension_diff"]
         result_diff = record["result_diff"]
@@ -232,13 +234,14 @@ def main():
             rows[model][record["region"]].append(row)
             if model == "strength":
                 fold_rows[record["fold"]].append(row)
+                regional_fold_rows[(record["region"], record["fold"])].append(row)
         observations[record["region"]].append((dimension_diff, result_diff, record["won"]))
     fold_report = [
         {"fold": fold_number, "train_fraction": train_fraction, "test_fraction": test_fraction, **metrics(fold_rows[fold_number])}
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "north_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "weight_candidates": {}, "dimension_ablation": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "south_scale_validation": {}, "north_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "weight_candidates": {}, "dimension_ablation": {}, "blend_grid": {}}
     failures = []
     for region in REGIONS:
         report["regions"][region] = {model: metrics(rows[model][region]) for model in rows}
@@ -277,6 +280,35 @@ def main():
         threshold = 0.06 if region == "全部" else 0.10
         if calibration["ece"] >= threshold:
             failures.append(f"{region} confidence calibration ECE {calibration['ece']:.3f} >= {threshold:.2f}")
+    for region in REGIONS:
+        folds = {str(fold): confidence_calibration(regional_fold_rows[(region, fold)]) for fold in range(1, len(FOLDS) + 1)}
+        mean_ece_pct = 100.0 * sum(item["ece"] for item in folds.values()) / len(folds)
+        report["fold_calibration"][region] = {
+            "folds": folds,
+            "mean_ece_pct": mean_ece_pct,
+            "uncertainty_floor_pct": RELEASE_UNCERTAINTY_FLOORS[region],
+        }
+        if RELEASE_UNCERTAINTY_FLOORS[region] + 1e-9 < math.ceil(mean_ece_pct):
+            failures.append(f"{region} uncertainty floor is narrower than mean rolling-fold ECE")
+    south_scale_rows = {"scale_8": defaultdict(list), "release_scale_10": defaultdict(list)}
+    for record in records:
+        if record["region"] != "南部赛区":
+            continue
+        difference = release_tactical_diff(record["dimension_diff"], record["region"])
+        south_scale_rows["scale_8"][record["fold"]].append((1.0 / (1.0 + math.exp(-difference / 8.0)), record["won"]))
+        south_scale_rows["release_scale_10"][record["fold"]].append((1.0 / (1.0 + math.exp(-difference / 10.0)), record["won"]))
+    for profile, by_fold in south_scale_rows.items():
+        combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
+        report["south_scale_validation"][profile] = {
+            "overall": metrics(combined),
+            "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
+        }
+    if all(
+        report["south_scale_validation"]["scale_8"]["folds"][str(fold)]["brier"]
+        <= report["south_scale_validation"]["release_scale_10"]["folds"][str(fold)]["brier"]
+        for fold in range(1, len(FOLDS) + 1)
+    ):
+        failures.append("South scale 8 now dominates release scale 10 in every rolling fold; recalibration is required")
     north_profiles = {"global": defaultdict(list), "release": defaultdict(list)}
     for record in records:
         if record["region"] != "北部赛区":
