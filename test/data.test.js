@@ -52,11 +52,13 @@ test('all published teams use complete score schema 4.0', () => {
     assert.ok(Math.abs(teamStrength(team) - team.strength_analysis.score) < .15, listing.team)
     assert.equal(team.strength_analysis.tactical_weight, 1, listing.team)
     assert.equal(team.strength_analysis.result_weight, 0, listing.team)
-    assert.equal(team.strength_analysis.matchup_model_version, '4.3.0', listing.team)
+    assert.equal(team.strength_analysis.matchup_model_version, '4.4.0', listing.team)
     assert.deepEqual(team.strength_analysis.matchup_result_weights, { 南部赛区: 0, 东部赛区: .1, 北部赛区: 0, 跨赛区: 0 }, listing.team)
     assert.deepEqual(team.strength_analysis.matchup_scales, { 南部赛区: 10, 东部赛区: 10, 北部赛区: 21, 跨赛区: 22 }, listing.team)
-    assert.deepEqual(team.strength_analysis.matchup_uncertainty_floor_pct, { 南部赛区: 12, 东部赛区: 13, 北部赛区: 12, 跨赛区: 15 }, listing.team)
-    assert.deepEqual(team.strength_analysis.matchup_mean_fold_ece_pct, { 南部赛区: 11.1, 东部赛区: 12.2, 北部赛区: 7.5, 跨赛区: null }, listing.team)
+    assert.deepEqual(team.strength_analysis.matchup_stage_scale_multipliers, { 南部赛区: { 小组赛: 1, 淘汰赛: .8 }, 东部赛区: { 小组赛: 1, 淘汰赛: 1 }, 北部赛区: { 小组赛: 1, 淘汰赛: 1 } }, listing.team)
+    assert.deepEqual(team.strength_analysis.matchup_gap_scale_multipliers, { 南部赛区: { threshold: 10, below: 1, at_or_above: .8 }, 东部赛区: { threshold: 10, below: 1, at_or_above: 1 }, 北部赛区: { threshold: 10, below: 1, at_or_above: 1 } }, listing.team)
+    assert.deepEqual(team.strength_analysis.matchup_uncertainty_floor_pct, { 南部赛区: 13, 东部赛区: 13, 北部赛区: 12, 跨赛区: 15 }, listing.team)
+    assert.deepEqual(team.strength_analysis.matchup_mean_fold_ece_pct, { 南部赛区: 12.3, 东部赛区: 12.2, 北部赛区: 7.5, 跨赛区: null }, listing.team)
     assert.deepEqual(team.strength_analysis.matchup_dimension_weights, {
       全国统一: tacticalWeights,
       南部赛区: { ...tacticalWeights, spatial: .15, defense: .08 },

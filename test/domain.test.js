@@ -232,6 +232,19 @@ test('South matchup calibration reduces duplicated defense weight and values ind
   assert.ok(south.primaryPct > 50)
 })
 
+test('South matchup uses validated stage and strength-gap scales without adding side bias', () => {
+  const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '南部赛区' }, scores: Object.fromEntries(Object.keys(strongTeam.scores).map(key => [key, 70])), strength_analysis: { score: 70, result_score: 50 } }
+  const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '南部赛区' }, scores: Object.fromEntries(Object.keys(weakerTeam.scores).map(key => [key, 50])), strength_analysis: { score: 50, result_score: 50 } }
+  const group = matchupEstimate(first, second, [], { stage: '小组赛' })
+  const elimination = matchupEstimate(first, second, [], { stage: '淘汰赛' })
+  assert.equal(group.baseScale, 10)
+  assert.equal(group.gapMultiplier, .8)
+  assert.equal(group.scale, 8)
+  assert.equal(elimination.stageMultiplier, .8)
+  assert.ok(Math.abs(elimination.scale - 6.4) < 1e-12)
+  assert.ok(elimination.primaryPct > group.primaryPct)
+})
+
 test('cross-region matchup stays exploratory and exposes a wider interval', () => {
   const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '南部赛区' } }
   const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '北部赛区' } }
@@ -247,8 +260,8 @@ test('regional matchup intervals cover rolling calibration drift', () => {
     { ...strongTeam, summary: { ...strongTeam.summary, region: '南部赛区' } },
     { ...weakerTeam, summary: { ...weakerTeam.summary, region: '南部赛区' } },
   )
-  assert.equal(south.foldEcePct, 11.1)
-  assert.equal(south.modelMargin, 12)
+  assert.equal(south.foldEcePct, 12.3)
+  assert.equal(south.modelMargin, 13)
   const east = matchupEstimate(
     { ...strongTeam, summary: { ...strongTeam.summary, region: '东部赛区' } },
     { ...weakerTeam, summary: { ...weakerTeam.summary, region: '东部赛区' } },

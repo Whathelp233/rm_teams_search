@@ -87,7 +87,7 @@ const regionalMatchupLabels = {
 }
 
 const matchupUncertainty = {
-  南部赛区: { margin: 12, foldEcePct: 11.1 },
+  南部赛区: { margin: 13, foldEcePct: 12.3 },
   东部赛区: { margin: 13, foldEcePct: 12.2 },
   北部赛区: { margin: 12, foldEcePct: 7.5 },
 }
@@ -284,7 +284,7 @@ export function roleFrameSeries(game) {
   })
 }
 
-export function matchupEstimate(primary, opponent, headToHead = []) {
+export function matchupEstimate(primary, opponent, headToHead = [], context = {}) {
   const primaryStrength = teamStrength(primary)
   const opponentStrength = teamStrength(opponent)
   const primaryRegion = primary?.summary?.region || primary?.region
@@ -302,13 +302,18 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
   const opponentTacticalModel = sameRegion ? tacticalModelScore(opponent) : opponentStrength
   const primaryModelScore = primaryTacticalModel * (1 - resultWeight) + primaryResult * resultWeight
   const opponentModelScore = opponentTacticalModel * (1 - resultWeight) + opponentResult * resultWeight
-  const regionalScale = primaryRegion === opponentRegion
+  const baseScale = primaryRegion === opponentRegion
     ? ({ 南部赛区: 10, 东部赛区: 10, 北部赛区: 21 }[primaryRegion] || 22)
     : 22
   // Rolling-origin tests retain a small result correction only for East-region
   // matchups. Rankings stay tactical-only and cross-region estimates remain
   // conservative because no direct cross-region sample exists in this dataset.
-  const probability = 1 / (1 + Math.exp(-(primaryModelScore - opponentModelScore) / regionalScale))
+  const modelDifference = primaryModelScore - opponentModelScore
+  const stage = context.stage === '淘汰赛' ? '淘汰赛' : '小组赛'
+  const stageMultiplier = sameRegion && primaryRegion === '南部赛区' && stage === '淘汰赛' ? 0.8 : 1
+  const gapMultiplier = sameRegion && primaryRegion === '南部赛区' && Math.abs(modelDifference) >= 10 ? 0.8 : 1
+  const regionalScale = baseScale * stageMultiplier * gapMultiplier
+  const probability = 1 / (1 + Math.exp(-modelDifference / regionalScale))
   const h2hGames = headToHead.length
   const h2hWins = headToHead.filter(match => Boolean(match.won)).length
   // Direct meetings are shown as context, but rolling-origin tests find that
@@ -336,6 +341,10 @@ export function matchupEstimate(primary, opponent, headToHead = []) {
     opponentModelScore: Math.round(opponentModelScore * 10) / 10,
     resultWeight,
     scale: regionalScale,
+    baseScale,
+    stage,
+    stageMultiplier,
+    gapMultiplier,
     weightProfile,
     dimensionWeights,
     modelMargin,
@@ -420,8 +429,8 @@ export function seriesWinProbability(singleGamePct, bestOf = 3) {
   return Math.round(total * 1000) / 10
 }
 
-function makeSeriesPair(first, second, bestOf = 3) {
-  const estimate = matchupEstimate(first, second)
+function makeSeriesPair(first, second, bestOf = 3, stage = '小组赛') {
+  const estimate = matchupEstimate(first, second, [], { stage })
   const firstPct = seriesWinProbability(estimate.primaryPct, bestOf)
   return { first: first.team, second: second.team, firstPct, secondPct: Math.round((100 - firstPct) * 10) / 10, confidence: estimate.confidence, bestOf, winner: null }
 }
@@ -476,7 +485,7 @@ export function doubleEliminationNextPairings(teams, rounds = [], target = Math.
         + teamStrength(candidate)
       if (score < bestScore) { bestScore = score; bestIndex = index }
     }
-    pairs.push(makeSwissPair(first, pool.splice(bestIndex, 1)[0]))
+    pairs.push(makeSeriesPair(first, pool.splice(bestIndex, 1)[0], 3, '淘汰赛'))
   }
   return pairs
 }
@@ -533,9 +542,9 @@ export function monteCarloTournament(groups, config, mode = 'repechage', iterati
     const secondDouble = simulateDoubleElimination(top8Teams, 4, rng)
     add(secondDouble.qualifiers, 'top4')
     const seeded = secondDouble.qualifiers.map(name => byName.get(name)).filter(Boolean).sort((a, b) => teamStrength(b) - teamStrength(a))
-    const semifinals = [makeSwissPair(seeded[0], seeded[3]), makeSwissPair(seeded[1], seeded[2])]
+    const semifinals = [makeSeriesPair(seeded[0], seeded[3], 3, '淘汰赛'), makeSeriesPair(seeded[1], seeded[2], 3, '淘汰赛')]
     const finalists = semifinals.map(match => predictedWinner(match, 'random', rng))
-    const finalMatch = makeSeriesPair(byName.get(finalists[0]), byName.get(finalists[1]), 5)
+    const finalMatch = makeSeriesPair(byName.get(finalists[0]), byName.get(finalists[1]), 5, '淘汰赛')
     add([predictedWinner(finalMatch, 'random', rng)], 'champion')
   }
   const pct = value => Math.round(value * 1000 / iterations) / 10

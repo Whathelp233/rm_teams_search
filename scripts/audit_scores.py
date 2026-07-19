@@ -10,6 +10,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "public" / "data"
 DIMENSIONS = ("firepower", "objective", "spatial", "defense", "resource", "adaptability")
 STAGES = {None: 0, "16强": 1, "八强": 2, "殿军": 3, "季军": 4, "亚军": 5, "冠军": 6}
+ELIMINATION_STARTS = {
+    "南部赛区": "2026-05-16 14:10:00", "东部赛区": "2026-05-24 14:10:00", "北部赛区": "2026-06-01 14:10:00",
+}
 
 
 def ranks(values):
@@ -166,25 +169,32 @@ def main():
     payload_by_team = {team["team"]: team for team in teams}
     for team in teams:
         for match in team["matches"]:
-            games.setdefault(match["game_id"], (team["team"], match["opponent"], bool(match["won"]), team["summary"]["region"]))
+            games.setdefault(match["game_id"], (team["team"], match["opponent"], bool(match["won"]), team["summary"]["region"], match["started_at"]))
     report["matchup_calibration"] = {}
     for region in ("全部", "南部赛区", "东部赛区", "北部赛区"):
         probabilities = []
         outcomes = []
-        for primary, opponent, won, game_region in games.values():
+        for primary, opponent, won, game_region, started_at in games.values():
             if region != "全部" and game_region != region:
                 continue
             result_weight = 0.10 if game_region == "东部赛区" else 0.0
-            scale = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0}[game_region]
-            if game_region == "北部赛区":
-                weights = {**expected_dimension_weights, "spatial": 0.08, "resource": 0.16}
-                primary_tactical = sum(payload_by_team[primary]["scores"][key] * weight for key, weight in weights.items())
-                opponent_tactical = sum(payload_by_team[opponent]["scores"][key] * weight for key, weight in weights.items())
-            else:
-                primary_tactical, opponent_tactical = strengths[primary], strengths[opponent]
+            weights = expected_dimension_weights
+            if game_region == "南部赛区":
+                weights = {**expected_dimension_weights, "spatial": 0.15, "defense": 0.08}
+            elif game_region == "北部赛区":
+                weights = {**expected_dimension_weights, "spatial": 0.05, "resource": 0.19}
+            primary_tactical = sum(payload_by_team[primary]["scores"][key] * weight for key, weight in weights.items())
+            opponent_tactical = sum(payload_by_team[opponent]["scores"][key] * weight for key, weight in weights.items())
             primary_model = (1.0 - result_weight) * primary_tactical + result_weight * results[primary]
             opponent_model = (1.0 - result_weight) * opponent_tactical + result_weight * results[opponent]
-            probability = 1.0 / (1.0 + math.exp(-(primary_model - opponent_model) / scale))
+            difference = primary_model - opponent_model
+            scale = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0}[game_region]
+            if game_region == "南部赛区":
+                if started_at >= ELIMINATION_STARTS[game_region]:
+                    scale *= 0.8
+                if abs(difference) >= 10:
+                    scale *= 0.8
+            probability = 1.0 / (1.0 + math.exp(-difference / scale))
             probabilities.append(probability)
             outcomes.append(float(won))
         brier = sum((probability - outcome) ** 2 for probability, outcome in zip(probabilities, outcomes)) / len(outcomes)
