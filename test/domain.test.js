@@ -209,6 +209,29 @@ test('only same-region East matchup uses the ten-percent result correction', () 
   assert.equal(cross.primaryPct, 50)
 })
 
+test('North matchup calibration shifts noisy spatial weight into resource evidence', () => {
+  const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '北部赛区' }, scores: { ...strongTeam.scores, spatial: 0, resource: 100 }, strength_analysis: { score: 60, result_score: 50 } }
+  const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '北部赛区' }, scores: { ...weakerTeam.scores, spatial: 100, resource: 0 }, strength_analysis: { score: 60, result_score: 50 } }
+  const north = matchupEstimate(first, second)
+  assert.equal(north.weightProfile, '北部赛区校准')
+  assert.equal(north.scale, 21)
+  assert.equal(north.dimensionWeights.spatial, .08)
+  assert.equal(north.dimensionWeights.resource, .16)
+  assert.ok(north.primaryPct > 50)
+  assert.equal(north.confidence, '中')
+  assert.equal(north.modelMargin, 12)
+})
+
+test('cross-region matchup stays exploratory and exposes a wider interval', () => {
+  const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '南部赛区' } }
+  const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '北部赛区' } }
+  const cross = matchupEstimate(first, second)
+  assert.equal(cross.weightProfile, '全国统一六维')
+  assert.equal(cross.confidence, '探索性')
+  assert.equal(cross.modelMargin, 15)
+  assert.ok(cross.interval[1] - cross.interval[0] >= 30)
+})
+
 test('role facts rank nullable metrics without treating not-applicable as zero', () => {
   const teams = [
     { team: '乙', summary: { availability_pct: 80 } },
