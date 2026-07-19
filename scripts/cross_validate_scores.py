@@ -379,6 +379,8 @@ def score_fold(index, payloads, train_ids, directory, series_window=None):
                 for dimension in DIMENSION_WEIGHTS
             },
             "opponent_score": payload["opponent_score_analysis"]["score"],
+            "score_confidence": payload["score_confidence"]["overall"],
+            "dimension_confidence": payload["dimension_confidence"],
         }
     return scored, counts
 
@@ -436,6 +438,22 @@ def build_records():
                     },
                     "result_diff": round(first_strength["result_score"] - second_strength["result_score"], 3),
                     "opponent_score_diff": round(first["opponent_score"] - second["opponent_score"], 3),
+                    "evidence": {
+                        "primary_games": counts[game["primary"]],
+                        "opponent_games": counts[game["opponent"]],
+                        "primary_overall": first["score_confidence"],
+                        "opponent_overall": second["score_confidence"],
+                        "primary_tactical": round(sum(
+                            first["dimension_confidence"][dimension]
+                            * release_dimension_weights(game["region"])[dimension]
+                            for dimension in DIMENSION_WEIGHTS
+                        ), 3),
+                        "opponent_tactical": round(sum(
+                            second["dimension_confidence"][dimension]
+                            * release_dimension_weights(game["region"])[dimension]
+                            for dimension in DIMENSION_WEIGHTS
+                        ), 3),
+                    },
                     "h2h_games": len(direct_history),
                     "h2h_wins": sum(bool(match.get("won")) for match in direct_history),
                 })
@@ -448,11 +466,11 @@ def main():
         records = build_records()
         if args.write_fixture:
             FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-            FIXTURE.write_text(json.dumps({"schema_version": "4.2.0", "recent_series_windows": RECENT_SERIES_WINDOWS, "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            FIXTURE.write_text(json.dumps({"schema_version": "4.3.0", "recent_series_windows": RECENT_SERIES_WINDOWS, "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     else:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("schema_version") != "4.2.0" or tuple(fixture.get("recent_series_windows", ())) != RECENT_SERIES_WINDOWS:
-            raise SystemExit("rolling score fixture does not match score schema 4.2.0")
+        if fixture.get("schema_version") != "4.3.0" or tuple(fixture.get("recent_series_windows", ())) != RECENT_SERIES_WINDOWS:
+            raise SystemExit("rolling score fixture does not match score schema 4.3.0")
         records = fixture["records"]
 
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
@@ -478,7 +496,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "evidence_adaptive_calibration": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
     failures = []
     for region, weights in RELEASE_DIMENSION_WEIGHTS.items():
         if not math.isclose(sum(weights.values()), 1.0, abs_tol=1e-12):
@@ -890,6 +908,102 @@ def main():
         }
         if supported:
             failures.append(f"{region} has statistically supported recent-form weight; release review is required")
+
+    # Confidence metadata must not increase a team's strength. Test only a
+    # symmetric pull toward 50% when either side has limited pre-game evidence.
+    # This preserves the favorite and changes calibration magnitude alone.
+    evidence_modes = {
+        "overall_min": lambda evidence: min(evidence["primary_overall"], evidence["opponent_overall"]),
+        "overall_geometric": lambda evidence: math.sqrt(
+            evidence["primary_overall"] * evidence["opponent_overall"]
+        ),
+        "tactical_min": lambda evidence: min(evidence["primary_tactical"], evidence["opponent_tactical"]),
+        "tactical_geometric": lambda evidence: math.sqrt(
+            evidence["primary_tactical"] * evidence["opponent_tactical"]
+        ),
+    }
+    for region in REGIONS:
+        regional_records = [record for record in records if record["region"] == region]
+        baseline_probability = lambda record, region=region: probability(
+            release_strength_diff(record), 0.0, region, record.get("stage")
+        )
+        baseline_by_fold, baseline_by_evidence = defaultdict(list), defaultdict(list)
+        for record in regional_records:
+            predicted = baseline_probability(record)
+            baseline_by_fold[record["fold"]].append((predicted, record["won"]))
+            weakest = evidence_modes["overall_min"](record["evidence"])
+            bucket = "<45" if weakest < 45 else "45–55" if weakest < 55 else "55–65" if weakest < 65 else "≥65"
+            baseline_by_evidence[bucket].append((predicted, record["won"]))
+        baseline_folds = {
+            str(fold): metrics(baseline_by_fold[fold]) for fold in range(1, len(FOLDS) + 1)
+        }
+        baseline_overall = metrics([
+            row for fold in range(1, len(FOLDS) + 1) for row in baseline_by_fold[fold]
+        ])
+        candidates = []
+        for mode, evidence_function in evidence_modes.items():
+            for retention in (0.80, 0.85, 0.90, 0.95):
+                def candidate_probability(
+                    record, evidence_function=evidence_function, retention=retention
+                ):
+                    predicted = baseline_probability(record)
+                    evidence_fraction = min(1.0, max(0.0, evidence_function(record["evidence"]) / 100.0))
+                    factor = retention + (1.0 - retention) * evidence_fraction
+                    return 0.5 + (predicted - 0.5) * factor
+
+                by_fold = defaultdict(list)
+                for record in regional_records:
+                    by_fold[record["fold"]].append((candidate_probability(record), record["won"]))
+                folds = {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)}
+                overall = metrics([row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]])
+                brier_deltas = [
+                    folds[str(fold)]["brier"] - baseline_folds[str(fold)]["brier"]
+                    for fold in range(1, len(FOLDS) + 1)
+                ]
+                candidates.append({
+                    "evidence_mode": mode, "low_evidence_retention": retention,
+                    "overall": overall, "folds": folds,
+                    "overall_brier_delta": overall["brier"] - baseline_overall["brier"],
+                    "max_fold_brier_delta": max(brier_deltas),
+                    "stable_all_folds": max(brier_deltas) <= 1e-12,
+                })
+        candidates.sort(key=lambda item: (item["max_fold_brier_delta"], item["overall_brier_delta"]))
+        stable = [item for item in candidates if item["stable_all_folds"]]
+        best = min(stable, key=lambda item: item["overall_brier_delta"], default=None)
+        bootstrap = None
+        supported = False
+        if best:
+            evidence_function = evidence_modes[best["evidence_mode"]]
+            retention = best["low_evidence_retention"]
+
+            def selected_probability(record, evidence_function=evidence_function, retention=retention):
+                predicted = baseline_probability(record)
+                evidence_fraction = min(1.0, max(0.0, evidence_function(record["evidence"]) / 100.0))
+                factor = retention + (1.0 - retention) * evidence_fraction
+                return 0.5 + (predicted - 0.5) * factor
+
+            bootstrap = clustered_probability_delta(
+                records, region, baseline_probability, selected_probability
+            )
+            supported = (
+                best["overall_brier_delta"] <= -0.001
+                and bootstrap["probability_candidate_improves"] >= 0.975
+                and bootstrap["confidence_interval_95"][1] < 0
+            )
+        report["evidence_adaptive_calibration"][region] = {
+            "baseline": {
+                "overall": baseline_overall, "folds": baseline_folds,
+                "weakest_overall_evidence_buckets": {
+                    bucket: metrics(rows) for bucket, rows in baseline_by_evidence.items()
+                },
+            },
+            "candidate_count": len(candidates), "stable_candidates": len(stable),
+            "best_stable_candidate": best, "best_by_worst_fold": candidates[:5],
+            "clustered_bootstrap": bootstrap, "statistically_supported": supported,
+            "decision": "review_for_release" if supported else "retain_region_only_calibration",
+        }
+        if supported:
+            failures.append(f"{region} has statistically supported evidence-adaptive calibration; release review is required")
 
     def correction_profile(region, transform):
         by_fold = defaultdict(list)
