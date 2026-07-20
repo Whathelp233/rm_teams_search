@@ -25,15 +25,15 @@ REGIONS = ("南部赛区", "东部赛区", "北部赛区")
 FOLDS = ((0.55, 0.70), (0.70, 0.85), (0.85, 1.00))
 RECENT_SERIES_WINDOWS = (3, 5)
 RELEASE_RESULT_WEIGHTS = {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0}
-RELEASE_SCALES = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0}
+RELEASE_SCALES = {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 23.0}
 RELEASE_STAGE_SCALE_MULTIPLIERS = {
-    "南部赛区": {"小组赛": 1.0, "淘汰赛": 0.8},
+    "南部赛区": {"小组赛": 1.0, "淘汰赛": 1.0},
     "东部赛区": {"小组赛": 1.0, "淘汰赛": 1.0},
     "北部赛区": {"小组赛": 1.0, "淘汰赛": 1.0},
 }
 RELEASE_GAP_SCALE_MULTIPLIERS = {
-    "南部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 0.8},
-    "东部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0},
+    "南部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0},
+    "东部赛区": {"threshold": 5.0, "below": 0.5, "at_or_above": 1.0},
     "北部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0},
 }
 ELIMINATION_STARTS = {
@@ -46,18 +46,19 @@ BO5_MATCH_NUMBERS = {
     "东部赛区": {87, 88},
     "北部赛区": {89, 90},
 }
-RELEASE_UNCERTAINTY_FLOORS = {"南部赛区": 14.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0}
+RELEASE_UNCERTAINTY_FLOORS = {"南部赛区": 14.0, "东部赛区": 14.0, "北部赛区": 10.0, "跨赛区": 15.0}
 RELEASE_3_8_BASELINE = {
-    "overall": {"brier": 0.2271718878310605, "accuracy": 0.6413043478260869},
+    # Immutable 3.8 scorer evaluated on the same complete-series boundaries.
+    "overall": {"brier": 0.22534363766830084, "accuracy": 0.6385964912280702},
     "regions": {
-        "南部赛区": {"brier": 0.23075645874327472, "accuracy": 0.6304347826086957},
-        "东部赛区": {"brier": 0.20993687801060476, "accuracy": 0.6923076923076923},
-        "北部赛区": {"brier": 0.2404902251400687, "accuracy": 0.6021505376344086},
+        "南部赛区": {"brier": 0.23209275301237914, "accuracy": 0.6236559139784946},
+        "东部赛区": {"brier": 0.20297169934906334, "accuracy": 0.7010309278350515},
+        "北部赛区": {"brier": 0.24157953545742478, "accuracy": 0.5894736842105263},
     },
     "folds": {
-        "1": {"brier": 0.22921308579557478, "accuracy": 0.5978260869565217},
-        "2": {"brier": 0.2055769270228248, "accuracy": 0.6847826086956522},
-        "3": {"brier": 0.24672565067478205, "accuracy": 0.6413043478260869},
+        "1": {"brier": 0.2351278438271869, "accuracy": 0.5760869565217391},
+        "2": {"brier": 0.19417268137701152, "accuracy": 0.7191011235955056},
+        "3": {"brier": 0.24336352366163966, "accuracy": 0.625},
     },
 }
 DIMENSION_WEIGHTS = {
@@ -73,9 +74,9 @@ CURRENT_COMPONENT_WEIGHTS = {
     "adaptability": {"side_floor": 0.10, "opponent_floor": 0.10, "strong_opponent_response": 0.15, "setback_response": 0.35, "rematch_improvement": 0.30},
 }
 RELEASE_DIMENSION_WEIGHTS = {
-    "南部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.17, "defense": 0.02, "resource": 0.16},
+    "南部赛区": DIMENSION_WEIGHTS,
     "东部赛区": DIMENSION_WEIGHTS,
-    "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.04, "resource": 0.20},
+    "北部赛区": DIMENSION_WEIGHTS,
 }
 PREVIOUS_4_5_DIMENSION_WEIGHTS = {
     "南部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.15, "defense": 0.06, "resource": 0.14},
@@ -167,7 +168,7 @@ def metrics(rows):
 
 
 def clustered_brier_delta(records, baseline_weights, candidate_weights, region, iterations=20000):
-    """Paired bootstrap by chronological fold and series, not by game round."""
+    """Paired bootstrap with equal-weight official series as the estimand."""
     clusters = defaultdict(list)
     result_weight = release_result_weight(region)
     for record in records:
@@ -182,12 +183,14 @@ def clustered_brier_delta(records, baseline_weights, candidate_weights, region, 
         clusters[(record["fold"], record["match_no"])].append(
             (probabilities[1] - outcome) ** 2 - (probabilities[0] - outcome) ** 2
         )
-    values = list(clusters.values())
+    # A series is the resampling unit and also the estimand unit. Average its
+    # game deltas first so a 3/4-game series cannot outweigh a 2-game series.
+    values = [sum(cluster) / len(cluster) for cluster in clusters.values()]
     generator = random.Random(20260720)
     samples = []
     for _ in range(iterations):
         draw = [generator.choice(values) for _ in values]
-        samples.append(sum(sum(cluster) for cluster in draw) / sum(len(cluster) for cluster in draw))
+        samples.append(sum(draw) / len(draw))
     samples.sort()
     return {
         "clusters": len(values), "iterations": iterations,
@@ -197,7 +200,7 @@ def clustered_brier_delta(records, baseline_weights, candidate_weights, region, 
 
 
 def clustered_probability_delta(records, region, baseline_probability, candidate_probability, iterations=20000):
-    """Paired Brier delta for arbitrary probability transforms, clustered by series."""
+    """Paired Brier delta for transforms, averaged and resampled by series."""
     clusters = defaultdict(list)
     for record in records:
         if record["region"] != region:
@@ -206,12 +209,12 @@ def clustered_probability_delta(records, region, baseline_probability, candidate
         clusters[(record["fold"], record["match_no"])].append(
             (candidate_probability(record) - outcome) ** 2 - (baseline_probability(record) - outcome) ** 2
         )
-    values = list(clusters.values())
+    values = [sum(cluster) / len(cluster) for cluster in clusters.values()]
     generator = random.Random(20260720)
     samples = []
     for _ in range(iterations):
         draw = [generator.choice(values) for _ in values]
-        samples.append(sum(sum(cluster) for cluster in draw) / sum(len(cluster) for cluster in draw))
+        samples.append(sum(draw) / len(draw))
     samples.sort()
     return {
         "clusters": len(values), "iterations": iterations,
@@ -232,9 +235,12 @@ def clustered_favorite_side_delta(records, region, iterations=20000):
         favorite_side = record["side"] if favorite_is_primary else ("蓝" if record["side"] == "红" else "红")
         residual = float(favorite_is_primary == bool(record["won"])) - max(predicted, 1.0 - predicted)
         clusters[favorite_side][(record["fold"], record["match_no"])].append(residual)
-    values = {side: list(by_series.values()) for side, by_series in clusters.items()}
+    values = {
+        side: [sum(cluster) / len(cluster) for cluster in by_series.values()]
+        for side, by_series in clusters.items()
+    }
     observed = {
-        side: sum(sum(cluster) for cluster in side_values) / sum(len(cluster) for cluster in side_values)
+        side: sum(side_values) / len(side_values)
         for side, side_values in values.items()
     }
     generator = random.Random(20260720)
@@ -243,7 +249,7 @@ def clustered_favorite_side_delta(records, region, iterations=20000):
         means = []
         for side in ("红", "蓝"):
             draw = [generator.choice(values[side]) for _ in values[side]]
-            means.append(sum(sum(cluster) for cluster in draw) / sum(len(cluster) for cluster in draw))
+            means.append(sum(draw) / len(draw))
         samples.append(means[0] - means[1])
     samples.sort()
     return {
@@ -393,10 +399,22 @@ def build_records():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1):
             train_ids, tests = set(), []
             for region, games in regional.items():
-                train_end = round(len(games) * train_fraction)
-                test_end = round(len(games) * test_fraction)
-                train_ids.update(game["game_id"] for game in games[:train_end])
-                tests.extend(games[train_end:test_end])
+                # Split only between complete official series. A game-level
+                # boundary would let round 1 facts leak into a pre-series BO3
+                # prediction for rounds 2/3 of the same matchup.
+                ordered_series = []
+                for game in games:
+                    if not ordered_series or ordered_series[-1][0] != game["match_no"]:
+                        ordered_series.append((game["match_no"], []))
+                    ordered_series[-1][1].append(game)
+                train_end = round(len(ordered_series) * train_fraction)
+                test_end = round(len(ordered_series) * test_fraction)
+                train_ids.update(
+                    game["game_id"] for _, series_games in ordered_series[:train_end] for game in series_games
+                )
+                tests.extend(
+                    game for _, series_games in ordered_series[train_end:test_end] for game in series_games
+                )
             fold_dir = root / f"fold-{fold_number}"
             scored, counts = score_fold(index, payloads, train_ids, fold_dir)
             recent_scored = {
@@ -470,11 +488,11 @@ def main():
         records = build_records()
         if args.write_fixture:
             FIXTURE.parent.mkdir(parents=True, exist_ok=True)
-            FIXTURE.write_text(json.dumps({"schema_version": "4.4.0", "recent_series_windows": RECENT_SERIES_WINDOWS, "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            FIXTURE.write_text(json.dumps({"schema_version": "4.5.0", "fold_unit": "complete_official_series", "recent_series_windows": RECENT_SERIES_WINDOWS, "records": records}, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     else:
         fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("schema_version") != "4.4.0" or tuple(fixture.get("recent_series_windows", ())) != RECENT_SERIES_WINDOWS:
-            raise SystemExit("rolling score fixture does not match score schema 4.4.0")
+        if fixture.get("schema_version") != "4.5.0" or fixture.get("fold_unit") != "complete_official_series" or tuple(fixture.get("recent_series_windows", ())) != RECENT_SERIES_WINDOWS:
+            raise SystemExit("rolling score fixture does not match score schema 4.5.0")
         records = fixture["records"]
 
     rows = {model: defaultdict(list) for model in ("strength", "tactical", "result")}
@@ -500,8 +518,20 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "evidence_adaptive_calibration": {}, "nonlinear_dimension_validation": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "evidence_adaptive_calibration": {}, "nonlinear_dimension_validation": {}, "series_weighting_audit": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
     failures = []
+    for region in REGIONS:
+        series_lengths = defaultdict(int)
+        for record in records:
+            if record["region"] == region:
+                series_lengths[(record["fold"], record["match_no"])] += 1
+        distribution = Counter(series_lengths.values())
+        report["series_weighting_audit"][region] = {
+            "series": len(series_lengths), "games": sum(series_lengths.values()),
+            "game_count_distribution": {str(length): distribution[length] for length in sorted(distribution)},
+            "largest_to_smallest_game_weight_ratio": max(series_lengths.values()) / min(series_lengths.values()),
+            "clustered_estimand": "mean game loss within series, then equal weight across official series",
+        }
     for region, weights in RELEASE_DIMENSION_WEIGHTS.items():
         if not math.isclose(sum(weights.values()), 1.0, abs_tol=1e-12):
             failures.append(f"{region} matchup dimension weights do not sum to one")
@@ -622,14 +652,16 @@ def main():
                 },
             }
 
-    selected_transfers = {
-        "南部赛区": {"moves": ["defense→spatial 0.02", "defense→resource 0.02"]},
+    # Re-audit the retired South 4.6 specialization against the uniform 4.7
+    # profile. It is evidence, not a release hurdle: the generic transfer
+    # screen below is the symmetric gate for every possible new specialization.
+    retired_profiles = {
+        "南部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.17, "defense": 0.02, "resource": 0.16},
     }
-    for region, transfer in selected_transfers.items():
-        baseline_weights = PREVIOUS_4_5_DIMENSION_WEIGHTS[region]
-        candidate_weights = RELEASE_DIMENSION_WEIGHTS[region]
+    for region, retired_weights in retired_profiles.items():
+        release_weights = RELEASE_DIMENSION_WEIGHTS[region]
         profiles = {}
-        for name, weights in (("previous_4_5", baseline_weights), ("release_4_6", candidate_weights)):
+        for name, weights in (("retired_4_6", retired_weights), ("release_4_7", release_weights)):
             by_fold = defaultdict(list)
             for record in records:
                 if record["region"] != region:
@@ -644,21 +676,12 @@ def main():
                 "overall": metrics(combined),
                 "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
             }
-        previous, release = profiles["previous_4_5"], profiles["release_4_6"]
-        bootstrap = clustered_brier_delta(records, baseline_weights, candidate_weights, region)
-        report["dimension_weight_transfer_validation"][region] = {"transfer": transfer, "clustered_bootstrap": bootstrap, **profiles}
-        required_gain = 0.001 if region == "南部赛区" else 0.0
-        if release["overall"]["brier"] >= previous["overall"]["brier"] - required_gain:
-            failures.append(f"{region} selected dimension transfer does not improve overall chronological Brier by at least {required_gain:.3f}")
-        for fold in range(1, len(FOLDS) + 1):
-            key = str(fold)
-            if release["folds"][key]["brier"] >= previous["folds"][key]["brier"]:
-                failures.append(f"{region} selected dimension transfer does not improve fold {fold} chronological Brier")
-            if release["folds"][key]["accuracy"] < previous["folds"][key]["accuracy"]:
-                failures.append(f"{region} selected dimension transfer reduces fold {fold} chronological accuracy")
-        if region == "南部赛区":
-            if bootstrap["probability_candidate_improves"] < 0.975 or bootstrap["confidence_interval_95"][1] >= 0:
-                failures.append("South dimension shrinkage lacks 95% paired series-cluster bootstrap support")
+        bootstrap = clustered_brier_delta(records, release_weights, retired_weights, region)
+        report["dimension_weight_transfer_validation"][region] = {
+            "decision": "retire_unvalidated_regional_profile",
+            "clustered_bootstrap_for_retired_profile": bootstrap,
+            **profiles,
+        }
     for region in REGIONS:
         report["regions"][region] = {model: metrics(rows[model][region]) for model in rows}
         strength = report["regions"][region]["strength"]
@@ -1366,20 +1389,18 @@ def main():
         }
     south_uniform = report["south_scale_validation"]["uniform_scale_10"]
     south_release = report["south_scale_validation"]["release_stage_and_gap_scale"]
-    if south_release["overall"]["brier"] >= south_uniform["overall"]["brier"] - 0.001:
-        failures.append("South stage-aware scale does not improve overall chronological Brier by at least 0.001")
+    if south_release["overall"] != south_uniform["overall"]:
+        failures.append("South release must use the fold-stable uniform scale")
     for fold in range(1, len(FOLDS) + 1):
         key = str(fold)
-        if south_release["folds"][key]["brier"] > south_uniform["folds"][key]["brier"] + 1e-12:
-            failures.append(f"South stage-aware scale worsens fold {fold} chronological Brier")
-        if south_release["folds"][key]["accuracy"] < south_uniform["folds"][key]["accuracy"]:
-            failures.append(f"South stage-aware scale reduces fold {fold} chronological accuracy")
+        if south_release["folds"][key] != south_uniform["folds"][key]:
+            failures.append(f"South release deviates from uniform scale in fold {fold}")
     for region in REGIONS:
-        profiles = {"previous_4_5": defaultdict(list), "release_4_6": defaultdict(list)}
+        profiles = {"previous_4_5": defaultdict(list), "release_4_7": defaultdict(list)}
         for record in records:
             if record["region"] != region:
                 continue
-            for name, weights in (("previous_4_5", PREVIOUS_4_5_DIMENSION_WEIGHTS[region]), ("release_4_6", RELEASE_DIMENSION_WEIGHTS[region])):
+            for name, weights in (("previous_4_5", PREVIOUS_4_5_DIMENSION_WEIGHTS[region]), ("release_4_7", RELEASE_DIMENSION_WEIGHTS[region])):
                 tactical_diff = sum(record["dimension_diff"][key] * weight for key, weight in weights.items())
                 result_weight = release_result_weight(region)
                 difference = (1 - result_weight) * tactical_diff + result_weight * record["result_diff"]
@@ -1392,17 +1413,6 @@ def main():
                 "overall": metrics(combined),
                 "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
             }
-        if region == "南部赛区":
-            previous = report["regional_profile_validation"][region]["previous_4_5"]
-            release_profile = report["regional_profile_validation"][region]["release_4_6"]
-            if release_profile["overall"]["brier"] >= previous["overall"]["brier"] - 0.001:
-                failures.append(f"{region} 4.6 profile does not improve overall chronological Brier by at least 0.001")
-            for fold in range(1, len(FOLDS) + 1):
-                key = str(fold)
-                if release_profile["folds"][key]["brier"] >= previous["folds"][key]["brier"]:
-                    failures.append(f"{region} 4.6 profile does not improve fold {fold} chronological Brier")
-                if release_profile["folds"][key]["accuracy"] < previous["folds"][key]["accuracy"]:
-                    failures.append(f"{region} 4.6 profile reduces fold {fold} chronological accuracy")
     north_profiles = {"global": defaultdict(list), "release": defaultdict(list)}
     for record in records:
         if record["region"] != "北部赛区":
@@ -1419,16 +1429,12 @@ def main():
         }
     north_global = report["north_profile_validation"]["global"]
     north_release = report["north_profile_validation"]["release"]
-    if north_release["overall"]["brier"] >= north_global["overall"]["brier"] - 0.001:
-        failures.append("North regional profile does not improve chronological Brier by at least 0.001")
-    if north_release["overall"]["accuracy"] < north_global["overall"]["accuracy"]:
-        failures.append("North regional profile reduces chronological accuracy")
+    if north_release["overall"] != north_global["overall"]:
+        failures.append("North release must use the fold-stable global profile and scale")
     for fold in range(1, len(FOLDS) + 1):
         key = str(fold)
-        if north_release["folds"][key]["brier"] > north_global["folds"][key]["brier"]:
-            failures.append(f"North regional profile worsens fold {fold} chronological Brier")
-        if north_release["folds"][key]["accuracy"] < north_global["folds"][key]["accuracy"]:
-            failures.append(f"North regional profile reduces fold {fold} chronological accuracy")
+        if north_release["folds"][key] != north_global["folds"][key]:
+            failures.append(f"North release deviates from global profile in fold {fold}")
     h2h_rows = {"release": defaultdict(list), "legacy_blend": defaultdict(list)}
     h2h_history_rows = {"release": [], "legacy_blend": []}
     for record in records:

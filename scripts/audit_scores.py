@@ -13,15 +13,15 @@ STAGES = {None: 0, "16强": 1, "八强": 2, "殿军": 3, "季军": 4, "亚军": 
 ELIMINATION_STARTS = {
     "南部赛区": "2026-05-16 14:10:00", "东部赛区": "2026-05-24 14:10:00", "北部赛区": "2026-06-01 14:10:00",
 }
-MATCHUP_MODEL_VERSION = "matchup-4.6.0"
+MATCHUP_MODEL_VERSION = "matchup-4.7.0"
 TACTICAL_DIMENSION_WEIGHTS = {
     "firepower": 0.08, "objective": 0.56, "spatial": 0.12,
     "defense": 0.11, "resource": 0.12, "adaptability": 0.01,
 }
 MATCHUP_DIMENSION_WEIGHTS = {
-    "南部赛区": {**TACTICAL_DIMENSION_WEIGHTS, "spatial": 0.17, "defense": 0.02, "resource": 0.16},
+    "南部赛区": TACTICAL_DIMENSION_WEIGHTS,
     "东部赛区": TACTICAL_DIMENSION_WEIGHTS,
-    "北部赛区": {**TACTICAL_DIMENSION_WEIGHTS, "spatial": 0.04, "resource": 0.20},
+    "北部赛区": TACTICAL_DIMENSION_WEIGHTS,
 }
 
 
