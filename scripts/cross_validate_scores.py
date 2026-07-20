@@ -73,6 +73,18 @@ CURRENT_COMPONENT_WEIGHTS = {
     "resource": {"acquisition": 0.40, "utilization": 0.05, "combat_conversion": 0.10, "objective_conversion": 0.25, "thermal_efficiency": 0.20},
     "adaptability": {"side_floor": 0.10, "opponent_floor": 0.10, "strong_opponent_response": 0.15, "setback_response": 0.35, "rematch_improvement": 0.30},
 }
+# Frozen 4.8 ceilings for components whose winner direction is not positive in
+# every region's three future folds. A later release may raise a ceiling only
+# alongside new paired-series evidence; changing CURRENT_COMPONENT_WEIGHTS
+# alone must not silently increase an unstable signal.
+RELEASE_COMPONENT_WEIGHT_CEILINGS = {
+    "firepower": {"clean_output": 0.35, "accuracy": 0.15, "kill_conversion": 0.25, "pressure_uptime": 0.25},
+    "objective": {"outpost_pressure": 0.10, "outpost_conversion": 0.25, "base_pressure": 0.15, "base_conversion": 0.35, "strategic_tools": 0.15},
+    "spatial": {"relative_territory": 0.25, "forward_presence": 0.30, "neutral_control": 0.35, "field_coverage": 0.10},
+    "defense": {"trade_resilience": 0.35, "mobile_resilience": 0.25, "outpost_denial": 0.15, "base_denial": 0.15, "collapse_resistance": 0.10},
+    "resource": {"acquisition": 0.40, "utilization": 0.05, "combat_conversion": 0.10, "objective_conversion": 0.25, "thermal_efficiency": 0.20},
+    "adaptability": {"side_floor": 0.10, "opponent_floor": 0.10, "strong_opponent_response": 0.15, "setback_response": 0.35, "rematch_improvement": 0.30},
+}
 RELEASE_DIMENSION_WEIGHTS = {
     "南部赛区": DIMENSION_WEIGHTS,
     "东部赛区": DIMENSION_WEIGHTS,
@@ -543,7 +555,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "evidence_adaptive_calibration": {}, "nonlinear_dimension_validation": {}, "series_weighting_audit": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "component_temporal_validity": {}, "defense_component_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "evidence_adaptive_calibration": {}, "nonlinear_dimension_validation": {}, "series_weighting_audit": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "component_weight_release_guard": {}, "weight_candidates": {}, "dimension_validity": {}, "component_temporal_validity": {}, "defense_component_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
     failures = []
     for region in REGIONS:
         series_lengths = defaultdict(int)
@@ -754,6 +766,28 @@ def main():
         report["component_temporal_validity"][region] = regional_report
         # Retain the existing defense-specific contract for downstream audits.
         report["defense_component_validity"][region] = regional_report["defense"]
+
+    for dimension, weights in CURRENT_COMPONENT_WEIGHTS.items():
+        report["component_weight_release_guard"][dimension] = {}
+        for component, current_weight in weights.items():
+            unstable_regions = [
+                region for region in REGIONS
+                if not report["component_temporal_validity"][region][dimension]["components"][component]["eligible_for_weight_increase"]
+            ]
+            ceiling = RELEASE_COMPONENT_WEIGHT_CEILINGS[dimension][component]
+            guarded = bool(unstable_regions)
+            report["component_weight_release_guard"][dimension][component] = {
+                "current_weight": current_weight,
+                "release_ceiling": ceiling,
+                "guarded": guarded,
+                "unstable_regions": unstable_regions,
+                "within_release_ceiling": current_weight <= ceiling + 1e-12,
+            }
+            if guarded and current_weight > ceiling + 1e-12:
+                failures.append(
+                    f"{dimension}.{component} weight {current_weight:.3f} exceeds its unstable-component "
+                    f"release ceiling {ceiling:.3f}"
+                )
 
     # Re-audit the retired South 4.6 specialization against the uniform 4.8
     # profile. It is evidence, not a release hurdle: the generic transfer
