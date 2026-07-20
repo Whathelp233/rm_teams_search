@@ -10,7 +10,7 @@ import { buildCounterPlans, visibleTacticalPatterns } from './tactics.js'
 import { activeDamageEffects as effectsAt, deriveDamageEffects, deriveShotEffects, interpolatedFrame, nativeFrameRate, normalizeReplayData, teamFrameAt } from './replay.js'
 
 const base = import.meta.env.BASE_URL
-const dataRevision = 'score-4.0.0-matchup-4.7.0-rank-stability-1.0.0-series-validation-1.1.0-role-data-1.1.0-replay-3.1.0-tournament-3.0.0-tactics-1.0.0'
+const dataRevision = 'score-4.0.0-matchup-4.7.0-rank-stability-1.0.0-series-validation-1.2.0-role-data-1.1.0-replay-3.1.0-tournament-3.0.0-tactics-1.0.0'
 const index = ref({ teams: [] }), dataManifest = ref(null), selected = ref(null), query = ref(''), region = ref('全部'), error = ref('')
 const teamTab = ref('overview'), density = ref(localStorage.getItem('rmuc-density') || 'comfortable'), filtersOpen = ref(false), methodologyOpen = ref(false), loadingTeam = ref(false), loadingHeat = ref(false)
 const heat = ref(null), heatSide = ref('全部'), heatRobot = ref('全部'), heatView = ref('actual'), heatFrom = ref(0), heatTo = ref(420), heatMaskOpacity = ref(.34)

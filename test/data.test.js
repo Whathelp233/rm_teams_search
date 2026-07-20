@@ -21,7 +21,12 @@ test('all published teams use complete score schema 4.0', () => {
     fold_unit: 'complete_official_series',
     series_weighting: 'equal_official_series',
     game: { samples: 285, brier: .21258, accuracy: .677193 },
-    series: { samples: 119, brier: .182572, accuracy: .747899, ece: .0419, bo3_samples: 113, bo5_samples: 6, method: 'iid_binomial', temperature: 1 },
+    series: {
+      samples: 119, brier: .182572, accuracy: .747899, ece: .0419,
+      bo3_samples: 113, bo5_samples: 6, method: 'iid_binomial', temperature: 1,
+      paired_improvement_probability: .9027, paired_ci95: [-.01539, .003538],
+      statistically_supported: false, region_fold_cells_improved: 6, region_fold_cells_total: 9,
+    },
     bo5_data_limited: true,
   })
   const dimensions = ['firepower', 'objective', 'spatial', 'defense', 'resource', 'adaptability']

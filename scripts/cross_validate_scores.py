@@ -223,6 +223,26 @@ def clustered_probability_delta(records, region, baseline_probability, candidate
     }
 
 
+def paired_series_brier_delta(samples, baseline_probability, candidate_probability, iterations=20000):
+    """Paired bootstrap where each complete official series has equal weight."""
+    deltas = [
+        (candidate_probability(sample) - float(sample["won"])) ** 2
+        - (baseline_probability(sample) - float(sample["won"])) ** 2
+        for sample in samples
+    ]
+    generator = random.Random(20260720)
+    bootstrapped = sorted(
+        sum(generator.choice(deltas) for _ in deltas) / len(deltas)
+        for _ in range(iterations)
+    )
+    return {
+        "series": len(deltas), "iterations": iterations,
+        "mean_brier_delta": sum(deltas) / len(deltas),
+        "probability_candidate_improves": sum(value < 0 for value in bootstrapped) / iterations,
+        "confidence_interval_95": [bootstrapped[int(iterations * 0.025)], bootstrapped[int(iterations * 0.975) - 1]],
+    }
+
+
 def clustered_favorite_side_delta(records, region, iterations=20000):
     """Bootstrap red-minus-blue favorite calibration residual by series."""
     clusters = defaultdict(lambda: defaultdict(list))
@@ -1279,24 +1299,67 @@ def main():
         })
 
     def series_profile(transform):
-        by_fold, by_region, by_best_of = defaultdict(list), defaultdict(list), defaultdict(list)
+        by_fold, by_region, by_region_fold, by_best_of = defaultdict(list), defaultdict(list), defaultdict(list), defaultdict(list)
         all_rows = []
         for sample in series_samples:
             row = (transform(sample), sample["won"])
             all_rows.append(row)
             by_fold[sample["fold"]].append(row)
             by_region[sample["region"]].append(row)
+            by_region_fold[(sample["region"], sample["fold"])].append(row)
             by_best_of[str(sample["best_of"])].append(row)
         return {
             "overall": metrics(all_rows),
             "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
             "regions": {region: metrics(by_region[region]) for region in REGIONS},
+            "region_folds": {
+                region: {
+                    str(fold): metrics(by_region_fold[(region, fold)])
+                    for fold in range(1, len(FOLDS) + 1)
+                }
+                for region in REGIONS
+            },
             "best_of": {key: metrics(value) for key, value in sorted(by_best_of.items())},
             "favorite_calibration": confidence_calibration(all_rows),
         }
 
     single_series_profile = series_profile(lambda sample: sample["single_probability"])
     iid_series_profile = series_profile(lambda sample: series_probability(sample["single_probability"], sample["best_of"]))
+    series_bootstrap = paired_series_brier_delta(
+        series_samples,
+        lambda sample: sample["single_probability"],
+        lambda sample: series_probability(sample["single_probability"], sample["best_of"]),
+    )
+    region_fold_deltas = {
+        region: {
+            str(fold): iid_series_profile["region_folds"][region][str(fold)]["brier"]
+            - single_series_profile["region_folds"][region][str(fold)]["brier"]
+            for fold in range(1, len(FOLDS) + 1)
+        }
+        for region in REGIONS
+    }
+    region_fold_values = [value for folds in region_fold_deltas.values() for value in folds.values()]
+    conversion_strength_candidates = []
+    for step in range(11):
+        strength = step / 10
+        profile = series_profile(lambda sample, strength=strength: (
+            sample["single_probability"] + strength * (
+                series_probability(sample["single_probability"], sample["best_of"])
+                - sample["single_probability"]
+            )
+        ))
+        conversion_strength_candidates.append({
+            "strength": strength,
+            "overall": profile["overall"],
+            "regions": profile["regions"],
+            "region_folds": profile["region_folds"],
+            "overall_brier_delta_vs_single": profile["overall"]["brier"] - single_series_profile["overall"]["brier"],
+            "max_region_fold_brier_delta_vs_single": max(
+                profile["region_folds"][region][str(fold)]["brier"]
+                - single_series_profile["region_folds"][region][str(fold)]["brier"]
+                for region in REGIONS for fold in range(1, len(FOLDS) + 1)
+            ),
+        })
     temperature_candidates = []
     for step in range(14, 31):
         temperature = step / 20
@@ -1328,6 +1391,21 @@ def main():
         "bo5_match_numbers": {region: sorted(values) for region, values in BO5_MATCH_NUMBERS.items()},
         "single_game_probability": single_series_profile,
         "release_iid_binomial": iid_series_profile,
+        "paired_series_bootstrap": {
+            **series_bootstrap,
+            "statistically_supported": (
+                series_bootstrap["probability_candidate_improves"] >= 0.975
+                and series_bootstrap["confidence_interval_95"][1] < 0
+            ),
+        },
+        "region_fold_stability": {
+            "brier_deltas_vs_single": region_fold_deltas,
+            "improved_cells": sum(value < 0 for value in region_fold_values),
+            "worsened_cells": sum(value > 0 for value in region_fold_values),
+            "total_cells": len(region_fold_values),
+            "stable_all_cells": all(value <= 1e-12 for value in region_fold_values),
+        },
+        "conversion_strength_validation": conversion_strength_candidates,
         "temperature_validation": {
             "selected_temperature": 1.0,
             "stable_candidates": stable_series_candidates,
@@ -1345,6 +1423,11 @@ def main():
         "bo3_samples": iid_series_profile["best_of"]["3"]["games"],
         "bo5_samples": iid_series_profile["best_of"]["5"]["games"],
         "method": "iid_binomial", "temperature": 1.0,
+        "paired_improvement_probability": round(series_bootstrap["probability_candidate_improves"], 6),
+        "paired_ci95": [round(value, 6) for value in series_bootstrap["confidence_interval_95"]],
+        "statistically_supported": report["series_conversion_validation"]["paired_series_bootstrap"]["statistically_supported"],
+        "region_fold_cells_improved": report["series_conversion_validation"]["region_fold_stability"]["improved_cells"],
+        "region_fold_cells_total": report["series_conversion_validation"]["region_fold_stability"]["total_cells"],
     }
     if any(published_series.get(key) != value for key, value in expected_series_contract.items()):
         failures.append("published series-validation contract does not match the rolling fixture")
