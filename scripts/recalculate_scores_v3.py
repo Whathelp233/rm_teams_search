@@ -740,6 +740,11 @@ def main():
         "series": {
             "samples": 119, "brier": 0.182572, "accuracy": 0.747899, "ece": 0.041900,
             "bo3_samples": 113, "bo5_samples": 6, "method": "iid_binomial", "temperature": 1.0,
+            "paired_improvement_probability": 0.902700,
+            "paired_ci95": [-0.015390, 0.003538],
+            "statistically_supported": False,
+            "region_fold_cells_improved": 6,
+            "region_fold_cells_total": 9,
         },
         "bo5_data_limited": True,
     }
