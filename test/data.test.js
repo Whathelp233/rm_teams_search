@@ -17,14 +17,14 @@ test('all published teams use complete score schema 4.0', () => {
   assert.deepEqual(index.rank_stability_method.series_per_region, { 南部赛区: 88, 东部赛区: 88, 北部赛区: 90 })
   assert.match(index.rank_stability_method.interpretation, /不是概率置信区间/)
   assert.deepEqual(index.matchup_validation, {
-    model_version: 'matchup-4.7.0',
+    model_version: 'matchup-4.8.0',
     fold_unit: 'complete_official_series',
     series_weighting: 'equal_official_series',
-    game: { samples: 285, brier: .21258, accuracy: .677193 },
+    game: { samples: 285, brier: .21242, accuracy: .677193 },
     series: {
-      samples: 119, brier: .182572, accuracy: .747899, ece: .0419,
+      samples: 119, brier: .182246, accuracy: .747899, ece: .042465,
       bo3_samples: 113, bo5_samples: 6, method: 'iid_binomial', temperature: 1,
-      paired_improvement_probability: .9027, paired_ci95: [-.01539, .003538],
+      paired_improvement_probability: .9083, paired_ci95: [-.015464, .003383],
       statistically_supported: false, region_fold_cells_improved: 6, region_fold_cells_total: 9,
     },
     bo5_data_limited: true,
@@ -80,7 +80,7 @@ test('all published teams use complete score schema 4.0', () => {
     assert.ok(Math.abs(teamStrength(team) - team.strength_analysis.score) < .15, listing.team)
     assert.equal(team.strength_analysis.tactical_weight, 1, listing.team)
     assert.equal(team.strength_analysis.result_weight, 0, listing.team)
-    assert.equal(team.strength_analysis.matchup_model_version, '4.7.0', listing.team)
+    assert.equal(team.strength_analysis.matchup_model_version, '4.8.0', listing.team)
     assert.deepEqual(team.strength_analysis.matchup_result_weights, { 南部赛区: 0, 东部赛区: .1, 北部赛区: 0, 跨赛区: 0 }, listing.team)
     assert.deepEqual(team.strength_analysis.matchup_scales, { 南部赛区: 10, 东部赛区: 10, 北部赛区: 23, 跨赛区: 22 }, listing.team)
     assert.deepEqual(team.strength_analysis.matchup_stage_scale_multipliers, { 南部赛区: { 小组赛: 1, 淘汰赛: 1 }, 东部赛区: { 小组赛: 1, 淘汰赛: 1 }, 北部赛区: { 小组赛: 1, 淘汰赛: 1 } }, listing.team)
@@ -91,7 +91,7 @@ test('all published teams use complete score schema 4.0', () => {
       全国统一: tacticalWeights,
       南部赛区: tacticalWeights,
       东部赛区: tacticalWeights,
-      北部赛区: tacticalWeights,
+      北部赛区: { ...tacticalWeights, spatial: .11, resource: .13 },
     }, listing.team)
     assert.equal(team.score_confidence.enters_score, false, listing.team)
     assert.equal(team.opponent_score_analysis.enters_strength, false, listing.team)

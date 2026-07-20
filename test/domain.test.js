@@ -209,16 +209,16 @@ test('only same-region East matchup uses the ten-percent result correction', () 
   assert.equal(cross.primaryPct, 50)
 })
 
-test('North matchup uses the unified six-dimension profile and conservative scale', () => {
+test('North matchup uses the validated minimal spatial-to-resource correction and conservative scale', () => {
   const neutral = Object.fromEntries(Object.keys(strongTeam.scores).map(key => [key, 50]))
   const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '北部赛区' }, scores: { ...neutral, spatial: 0, resource: 100 }, strength_analysis: { score: 60, result_score: 50 } }
   const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '北部赛区' }, scores: { ...neutral, spatial: 100, resource: 0 }, strength_analysis: { score: 60, result_score: 50 } }
   const north = matchupEstimate(first, second)
-  assert.equal(north.weightProfile, '全国统一六维')
+  assert.equal(north.weightProfile, '北部赛区校准六维')
   assert.equal(north.scale, 23)
-  assert.equal(north.dimensionWeights.spatial, .12)
-  assert.equal(north.dimensionWeights.resource, .12)
-  assert.equal(north.primaryPct, 50)
+  assert.equal(north.dimensionWeights.spatial, .11)
+  assert.equal(north.dimensionWeights.resource, .13)
+  assert.ok(north.primaryPct > 50)
   assert.equal(north.confidence, '中')
   assert.equal(north.modelMargin, 10)
 })
