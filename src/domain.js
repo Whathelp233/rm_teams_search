@@ -68,29 +68,12 @@ const tacticalWeights = {
   adaptability: .01,
 }
 
-const southMatchupWeights = {
-  ...tacticalWeights,
-  spatial: .17,
-  defense: .02,
-  resource: .16,
-}
-
-const northMatchupWeights = {
-  ...tacticalWeights,
-  spatial: .04,
-  resource: .20,
-}
-
-const regionalMatchupWeights = { 南部赛区: southMatchupWeights, 东部赛区: tacticalWeights, 北部赛区: northMatchupWeights }
-const regionalMatchupLabels = {
-  南部赛区: '南部赛区校准（火力8·目标56·空间17·防守2·资源16·适应1）',
-  北部赛区: '北部赛区校准（火力8·目标56·空间4·防守11·资源20·适应1）',
-}
+const regionalMatchupWeights = { 南部赛区: tacticalWeights, 东部赛区: tacticalWeights, 北部赛区: tacticalWeights }
 
 const matchupUncertainty = {
-  南部赛区: { margin: 14, foldEcePct: 13.2 },
-  东部赛区: { margin: 13, foldEcePct: 12.2 },
-  北部赛区: { margin: 12, foldEcePct: 7.2 },
+  南部赛区: { margin: 14, foldEcePct: 13.8 },
+  东部赛区: { margin: 14, foldEcePct: 9.0 },
+  北部赛区: { margin: 10, foldEcePct: 8.7 },
 }
 
 function finite(value, fallback = 0) {
@@ -292,7 +275,7 @@ export function matchupEstimate(primary, opponent, headToHead = [], context = {}
   const opponentRegion = opponent?.summary?.region || opponent?.region
   const sameRegion = primaryRegion === opponentRegion
   const dimensionWeights = sameRegion ? (regionalMatchupWeights[primaryRegion] || tacticalWeights) : tacticalWeights
-  const weightProfile = sameRegion ? (regionalMatchupLabels[primaryRegion] || '全国统一六维') : '全国统一六维'
+  const weightProfile = '全国统一六维'
   const resultWeight = sameRegion && primaryRegion === '东部赛区' ? 0.10 : 0
   const primaryResult = finite(primary?.strength_analysis?.result_score, 50)
   const opponentResult = finite(opponent?.strength_analysis?.result_score, 50)
@@ -304,15 +287,18 @@ export function matchupEstimate(primary, opponent, headToHead = [], context = {}
   const primaryModelScore = primaryTacticalModel * (1 - resultWeight) + primaryResult * resultWeight
   const opponentModelScore = opponentTacticalModel * (1 - resultWeight) + opponentResult * resultWeight
   const baseScale = primaryRegion === opponentRegion
-    ? ({ 南部赛区: 10, 东部赛区: 10, 北部赛区: 21 }[primaryRegion] || 22)
+    ? ({ 南部赛区: 10, 东部赛区: 10, 北部赛区: 23 }[primaryRegion] || 22)
     : 22
   // Rolling-origin tests retain a small result correction only for East-region
   // matchups. Rankings stay tactical-only and cross-region estimates remain
   // conservative because no direct cross-region sample exists in this dataset.
   const modelDifference = primaryModelScore - opponentModelScore
   const stage = context.stage === '淘汰赛' ? '淘汰赛' : '小组赛'
-  const stageMultiplier = sameRegion && primaryRegion === '南部赛区' && stage === '淘汰赛' ? 0.8 : 1
-  const gapMultiplier = sameRegion && primaryRegion === '南部赛区' && Math.abs(modelDifference) >= 10 ? 0.8 : 1
+  const stageMultiplier = 1
+  // Complete-series rolling tests show East sub-five-point gaps were too flat.
+  // Halving their logistic scale improves every time fold and the paired
+  // equal-series bootstrap excludes zero; larger gaps stay unchanged.
+  const gapMultiplier = sameRegion && primaryRegion === '东部赛区' && Math.abs(modelDifference) < 5 ? 0.5 : 1
   const regionalScale = baseScale * stageMultiplier * gapMultiplier
   const probability = 1 / (1 + Math.exp(-modelDifference / regionalScale))
   const h2hGames = headToHead.length

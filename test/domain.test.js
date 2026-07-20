@@ -209,41 +209,50 @@ test('only same-region East matchup uses the ten-percent result correction', () 
   assert.equal(cross.primaryPct, 50)
 })
 
-test('North matchup calibration shifts noisy spatial weight into resource evidence', () => {
-  const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '北部赛区' }, scores: { ...strongTeam.scores, spatial: 0, resource: 100 }, strength_analysis: { score: 60, result_score: 50 } }
-  const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '北部赛区' }, scores: { ...weakerTeam.scores, spatial: 100, resource: 0 }, strength_analysis: { score: 60, result_score: 50 } }
+test('North matchup uses the unified six-dimension profile and conservative scale', () => {
+  const neutral = Object.fromEntries(Object.keys(strongTeam.scores).map(key => [key, 50]))
+  const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '北部赛区' }, scores: { ...neutral, spatial: 0, resource: 100 }, strength_analysis: { score: 60, result_score: 50 } }
+  const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '北部赛区' }, scores: { ...neutral, spatial: 100, resource: 0 }, strength_analysis: { score: 60, result_score: 50 } }
   const north = matchupEstimate(first, second)
-  assert.match(north.weightProfile, /^北部赛区校准/)
-  assert.equal(north.scale, 21)
-  assert.equal(north.dimensionWeights.spatial, .04)
-  assert.equal(north.dimensionWeights.resource, .20)
-  assert.ok(north.primaryPct > 50)
+  assert.equal(north.weightProfile, '全国统一六维')
+  assert.equal(north.scale, 23)
+  assert.equal(north.dimensionWeights.spatial, .12)
+  assert.equal(north.dimensionWeights.resource, .12)
+  assert.equal(north.primaryPct, 50)
   assert.equal(north.confidence, '中')
-  assert.equal(north.modelMargin, 12)
+  assert.equal(north.modelMargin, 10)
 })
 
-test('South matchup calibration reduces duplicated defense weight and values independent field control', () => {
+test('South matchup uses the unified six-dimension profile', () => {
   const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '南部赛区' }, scores: { ...strongTeam.scores, spatial: 100, defense: 0 }, strength_analysis: { score: 50, result_score: 50 } }
   const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '南部赛区' }, scores: { ...weakerTeam.scores, spatial: 0, defense: 100 }, strength_analysis: { score: 50, result_score: 50 } }
   const south = matchupEstimate(first, second)
-  assert.match(south.weightProfile, /^南部赛区校准/)
-  assert.equal(south.dimensionWeights.spatial, .17)
-  assert.equal(south.dimensionWeights.defense, .02)
-  assert.equal(south.dimensionWeights.resource, .16)
+  assert.equal(south.weightProfile, '全国统一六维')
+  assert.equal(south.dimensionWeights.spatial, .12)
+  assert.equal(south.dimensionWeights.defense, .11)
+  assert.equal(south.dimensionWeights.resource, .12)
   assert.ok(south.primaryPct > 50)
 })
 
-test('South matchup uses validated stage and strength-gap scales without adding side bias', () => {
+test('South matchup does not add unvalidated stage or strength-gap corrections', () => {
   const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '南部赛区' }, scores: Object.fromEntries(Object.keys(strongTeam.scores).map(key => [key, 70])), strength_analysis: { score: 70, result_score: 50 } }
   const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '南部赛区' }, scores: Object.fromEntries(Object.keys(weakerTeam.scores).map(key => [key, 50])), strength_analysis: { score: 50, result_score: 50 } }
   const group = matchupEstimate(first, second, [], { stage: '小组赛' })
   const elimination = matchupEstimate(first, second, [], { stage: '淘汰赛' })
   assert.equal(group.baseScale, 10)
-  assert.equal(group.gapMultiplier, .8)
-  assert.equal(group.scale, 8)
-  assert.equal(elimination.stageMultiplier, .8)
-  assert.ok(Math.abs(elimination.scale - 6.4) < 1e-12)
-  assert.ok(elimination.primaryPct > group.primaryPct)
+  assert.equal(group.gapMultiplier, 1)
+  assert.equal(group.scale, 10)
+  assert.equal(elimination.stageMultiplier, 1)
+  assert.equal(elimination.scale, 10)
+  assert.equal(elimination.primaryPct, group.primaryPct)
+})
+
+test('East near-tie correction is limited to validated sub-five-point gaps', () => {
+  const first = { ...strongTeam, summary: { ...strongTeam.summary, region: '东部赛区' }, scores: Object.fromEntries(Object.keys(strongTeam.scores).map(key => [key, 52])), strength_analysis: { score: 52, result_score: 50 } }
+  const second = { ...weakerTeam, summary: { ...weakerTeam.summary, region: '东部赛区' }, scores: Object.fromEntries(Object.keys(weakerTeam.scores).map(key => [key, 50])), strength_analysis: { score: 50, result_score: 50 } }
+  const near = matchupEstimate(first, second)
+  assert.equal(near.gapMultiplier, .5)
+  assert.equal(near.scale, 5)
 })
 
 test('cross-region matchup stays exploratory and exposes a wider interval', () => {
@@ -261,19 +270,19 @@ test('regional matchup intervals cover rolling calibration drift', () => {
     { ...strongTeam, summary: { ...strongTeam.summary, region: '南部赛区' } },
     { ...weakerTeam, summary: { ...weakerTeam.summary, region: '南部赛区' } },
   )
-  assert.equal(south.foldEcePct, 13.2)
+  assert.equal(south.foldEcePct, 13.8)
   assert.equal(south.modelMargin, 14)
   const east = matchupEstimate(
     { ...strongTeam, summary: { ...strongTeam.summary, region: '东部赛区' } },
     { ...weakerTeam, summary: { ...weakerTeam.summary, region: '东部赛区' } },
   )
-  assert.equal(east.foldEcePct, 12.2)
-  assert.equal(east.modelMargin, 13)
+  assert.equal(east.foldEcePct, 9)
+  assert.equal(east.modelMargin, 14)
   const north = matchupEstimate(
     { ...strongTeam, summary: { ...strongTeam.summary, region: '北部赛区' } },
     { ...weakerTeam, summary: { ...weakerTeam.summary, region: '北部赛区' } },
   )
-  assert.equal(north.foldEcePct, 7.2)
+  assert.equal(north.foldEcePct, 8.7)
 })
 
 test('role facts rank nullable metrics without treating not-applicable as zero', () => {

@@ -30,9 +30,9 @@ DIMENSION_WEIGHTS = {
     "adaptability": 0.01,
 }
 MATCHUP_DIMENSION_WEIGHTS = {
-    "南部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.17, "defense": 0.02, "resource": 0.16},
+    "南部赛区": DIMENSION_WEIGHTS,
     "东部赛区": DIMENSION_WEIGHTS,
-    "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.04, "resource": 0.20},
+    "北部赛区": DIMENSION_WEIGHTS,
 }
 COMPONENT_WEIGHTS = {
     "firepower": {"clean_output": 0.35, "accuracy": 0.15, "kill_conversion": 0.25, "pressure_uptime": 0.25},
@@ -692,7 +692,7 @@ def main():
     rank_stability = {}
     if not args.backtest:
         fixture = json.loads(RANK_STABILITY_FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("score_version") != "score-4.0.0" or fixture.get("matchup_model_version") != "matchup-4.6.0":
+        if fixture.get("score_version") != "score-4.0.0" or fixture.get("matchup_model_version") != "matchup-4.7.0":
             raise ValueError("rank-stability fixture is stale for the published score/matchup model")
         if set(fixture.get("teams", {})) != set(teams):
             raise ValueError("rank-stability fixture does not cover exactly the published teams")
@@ -733,11 +733,13 @@ def main():
             },
         }
     index["matchup_validation"] = {
-        "model_version": "matchup-4.6.0",
-        "game": {"samples": 276, "brier": 0.211341, "accuracy": 0.684783},
+        "model_version": "matchup-4.7.0",
+        "fold_unit": "complete_official_series",
+        "series_weighting": "equal_official_series",
+        "game": {"samples": 285, "brier": 0.212580, "accuracy": 0.677193},
         "series": {
-            "samples": 112, "brier": 0.180191, "accuracy": 0.758929, "ece": 0.053252,
-            "bo3_samples": 106, "bo5_samples": 6, "method": "iid_binomial", "temperature": 1.0,
+            "samples": 119, "brier": 0.182572, "accuracy": 0.747899, "ece": 0.041900,
+            "bo3_samples": 113, "bo5_samples": 6, "method": "iid_binomial", "temperature": 1.0,
         },
         "bo5_data_limited": True,
     }
@@ -782,13 +784,13 @@ def main():
             "raw_win_rate_pct": rounded(100.0 * sum(bool(match.get("won")) for match in payload["matches"]) / max(1, len(payload["matches"]))),
             "opponent_adjustment": "result_score is estimated jointly from every opponent and red/blue side; transparent opponent score is audit evidence and is not added twice",
             "tactical_weight": 1.0, "result_weight": 0.0,
-            "matchup_model_version": "4.6.0",
+            "matchup_model_version": "4.7.0",
             "matchup_result_weights": {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0, "跨赛区": 0.0},
-            "matchup_scales": {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 21.0, "跨赛区": 22.0},
-            "matchup_stage_scale_multipliers": {"南部赛区": {"小组赛": 1.0, "淘汰赛": 0.8}, "东部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}, "北部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}},
-            "matchup_gap_scale_multipliers": {"南部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 0.8}, "东部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0}, "北部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0}},
-            "matchup_uncertainty_floor_pct": {"南部赛区": 14.0, "东部赛区": 13.0, "北部赛区": 12.0, "跨赛区": 15.0},
-            "matchup_mean_fold_ece_pct": {"南部赛区": 13.2, "东部赛区": 12.2, "北部赛区": 7.2, "跨赛区": None},
+            "matchup_scales": {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 23.0, "跨赛区": 22.0},
+            "matchup_stage_scale_multipliers": {"南部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}, "东部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}, "北部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}},
+            "matchup_gap_scale_multipliers": {"南部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0}, "东部赛区": {"threshold": 5.0, "below": 0.5, "at_or_above": 1.0}, "北部赛区": {"threshold": 10.0, "below": 1.0, "at_or_above": 1.0}},
+            "matchup_uncertainty_floor_pct": {"南部赛区": 14.0, "东部赛区": 14.0, "北部赛区": 10.0, "跨赛区": 15.0},
+            "matchup_mean_fold_ece_pct": {"南部赛区": 13.8, "东部赛区": 9.0, "北部赛区": 8.7, "跨赛区": None},
             "matchup_dimension_weights": {
                 "全国统一": DIMENSION_WEIGHTS,
                 **MATCHUP_DIMENSION_WEIGHTS,
@@ -800,7 +802,7 @@ def main():
                 "direct_dimension_weight": 0.75,
                 "enabling_dimension_weight": 0.25,
             },
-            "model": "rule-aligned tactical composite; rolling-origin matchup calibration uses 10% regularized Bradley-Terry for East, region-specific tactical weights, South stage/gap scales, and fold-ECE uncertainty floors",
+            "model": "rule-aligned tactical composite; complete-series rolling calibration uses unified tactical weights, 10% regularized Bradley-Terry for East, a validated East near-tie scale, and fold-ECE uncertainty floors",
             "red_side_intercept": rounded(side_bias, 3),
         }
         listing = listings[team]
