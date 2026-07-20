@@ -543,7 +543,7 @@ def main():
         for fold_number, (train_fraction, test_fraction) in enumerate(FOLDS, 1)
     ]
 
-    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "evidence_adaptive_calibration": {}, "nonlinear_dimension_validation": {}, "series_weighting_audit": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "defense_component_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
+    report = {"folds": fold_report, "regions": {}, "overall": {}, "candidate": {}, "calibration": {}, "fold_calibration": {}, "stratified_residuals": {}, "favorite_stratified_calibration": {}, "favorite_side_bootstrap": {}, "regional_transfer_screen": {}, "temporal_form_validation": {}, "evidence_adaptive_calibration": {}, "nonlinear_dimension_validation": {}, "series_weighting_audit": {}, "structural_correction_validation": {}, "series_conversion_validation": {}, "south_scale_validation": {}, "north_profile_validation": {}, "regional_profile_validation": {}, "head_to_head_adjustment": {}, "opponent_score_adjustment": {}, "component_weight_validation": {}, "component_reconstruction": {}, "component_ablation_by_region_fold": {}, "component_weight_perturbation": {}, "weight_candidates": {}, "dimension_validity": {}, "component_temporal_validity": {}, "defense_component_validity": {}, "dimension_weight_transfer_validation": {}, "dimension_ablation": {}, "dimension_ablation_by_region_fold": {}, "dimension_clustered_ablation": {}, "blend_grid": {}}
     failures = []
     for region in REGIONS:
         series_lengths = defaultdict(int)
@@ -677,65 +677,83 @@ def main():
                 },
             }
 
-    # Defense is intentionally broader than "low damage taken": it combines
-    # damage exchange, mobile survival, outpost denial, base denial and a lower
-    # quartile collapse floor. Audit those facts separately because a single
-    # terminal-HP-heavy component can look plausible in aggregate while its
-    # direction reverses between future tournament blocks. These diagnostics
-    # do not tune on the held-out games; they explicitly prevent a weight
-    # increase unless every chronological fold points in the same direction.
-    defense_components = tuple(CURRENT_COMPONENT_WEIGHTS["defense"])
+    # Audit every published component separately. A dimension-level average
+    # can hide one plausible-looking input whose direction reverses between
+    # future tournament blocks. These diagnostics do not tune on held-out
+    # games; they are a release guard against increasing an unstable input.
     for region in REGIONS:
         regional_records = [record for record in records if record["region"] == region]
-        component_report = {}
-        for component in defense_components:
-            by_fold = defaultdict(list)
-            by_stage = defaultdict(list)
-            signed_by_fold = defaultdict(list)
-            signed_by_stage = defaultdict(list)
-            for record in regional_records:
-                difference = record["component_diff"]["defense"][component]
-                row = (probability(difference, 0.0, region, record.get("stage")), record["won"])
-                signed = difference if record["won"] else -difference
-                by_fold[record["fold"]].append(row)
-                by_stage[record["stage"]].append(row)
-                signed_by_fold[record["fold"]].append(signed)
-                signed_by_stage[record["stage"]].append(signed)
-            combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
-            combined_signed = [value for fold in range(1, len(FOLDS) + 1) for value in signed_by_fold[fold]]
-            fold_margins = {
-                str(fold): sum(signed_by_fold[fold]) / len(signed_by_fold[fold])
-                for fold in range(1, len(FOLDS) + 1)
-            }
-            component_report[component] = {
-                "overall": {**metrics(combined), "winner_signed_margin": sum(combined_signed) / len(combined_signed)},
-                "folds": {
-                    str(fold): {**metrics(by_fold[fold]), "winner_signed_margin": fold_margins[str(fold)]}
+        regional_report = {}
+        for dimension, components in CURRENT_COMPONENT_WEIGHTS.items():
+            component_report = {}
+            for component in components:
+                by_fold = defaultdict(list)
+                by_stage = defaultdict(list)
+                signed_by_fold = defaultdict(list)
+                signed_by_stage = defaultdict(list)
+                for record in regional_records:
+                    difference = record["component_diff"][dimension][component]
+                    row = (probability(difference, 0.0, region, record.get("stage")), record["won"])
+                    signed = difference if record["won"] else -difference
+                    by_fold[record["fold"]].append(row)
+                    by_stage[record["stage"]].append(row)
+                    signed_by_fold[record["fold"]].append(signed)
+                    signed_by_stage[record["stage"]].append(signed)
+                combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
+                combined_signed = [
+                    value for fold in range(1, len(FOLDS) + 1) for value in signed_by_fold[fold]
+                ]
+                fold_margins = {
+                    str(fold): sum(signed_by_fold[fold]) / len(signed_by_fold[fold])
                     for fold in range(1, len(FOLDS) + 1)
-                },
-                "stages": {
-                    stage: {
-                        **metrics(rows),
-                        "winner_signed_margin": sum(signed_by_stage[stage]) / len(signed_by_stage[stage]),
-                    }
-                    for stage, rows in by_stage.items()
-                },
-                "positive_future_folds": sum(margin > 0 for margin in fold_margins.values()),
-                "eligible_for_weight_increase": all(margin > 0 for margin in fold_margins.values()),
+                }
+                component_report[component] = {
+                    "overall": {
+                        **metrics(combined),
+                        "winner_signed_margin": sum(combined_signed) / len(combined_signed),
+                    },
+                    "folds": {
+                        str(fold): {
+                            **metrics(by_fold[fold]),
+                            "winner_signed_margin": fold_margins[str(fold)],
+                        }
+                        for fold in range(1, len(FOLDS) + 1)
+                    },
+                    "stages": {
+                        stage: {
+                            **metrics(stage_rows),
+                            "winner_signed_margin": (
+                                sum(signed_by_stage[stage]) / len(signed_by_stage[stage])
+                            ),
+                        }
+                        for stage, stage_rows in by_stage.items()
+                    },
+                    "positive_future_folds": sum(margin > 0 for margin in fold_margins.values()),
+                    "eligible_for_weight_increase": all(margin > 0 for margin in fold_margins.values()),
+                }
+            stable_components = [
+                component for component, audit in component_report.items()
+                if audit["eligible_for_weight_increase"]
+            ]
+            regional_report[dimension] = {
+                "components": component_report,
+                "stable_components": stable_components,
+                "unstable_components": [
+                    component for component in component_report if component not in stable_components
+                ],
+                "release_action": (
+                    "eligible_for_paired_series_review"
+                    if len(stable_components) == len(component_report)
+                    else "hold_unstable_component_weights"
+                ),
+                "reason": (
+                    "a component may gain influence only after positive direction in every future fold "
+                    "and separate paired complete-series evidence"
+                ),
             }
-        stable_components = [
-            component for component, audit in component_report.items()
-            if audit["eligible_for_weight_increase"]
-        ]
-        report["defense_component_validity"][region] = {
-            "components": component_report,
-            "stable_components": stable_components,
-            "release_action": "hold_current_weight_no_increase",
-            "reason": (
-                "component directions are not positive in every future fold; keep the rule-aligned defense score "
-                "for description, but require paired series evidence before increasing its matchup influence"
-            ),
-        }
+        report["component_temporal_validity"][region] = regional_report
+        # Retain the existing defense-specific contract for downstream audits.
+        report["defense_component_validity"][region] = regional_report["defense"]
 
     # Re-audit the retired South 4.6 specialization against the uniform 4.8
     # profile. It is evidence, not a release hurdle: the generic transfer
