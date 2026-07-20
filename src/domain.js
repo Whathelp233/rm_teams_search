@@ -68,7 +68,11 @@ const tacticalWeights = {
   adaptability: .01,
 }
 
-const regionalMatchupWeights = { 南部赛区: tacticalWeights, 东部赛区: tacticalWeights, 北部赛区: tacticalWeights }
+const regionalMatchupWeights = {
+  南部赛区: tacticalWeights,
+  东部赛区: tacticalWeights,
+  北部赛区: { ...tacticalWeights, spatial: .11, resource: .13 },
+}
 
 const matchupUncertainty = {
   南部赛区: { margin: 14, foldEcePct: 13.8 },
@@ -275,7 +279,7 @@ export function matchupEstimate(primary, opponent, headToHead = [], context = {}
   const opponentRegion = opponent?.summary?.region || opponent?.region
   const sameRegion = primaryRegion === opponentRegion
   const dimensionWeights = sameRegion ? (regionalMatchupWeights[primaryRegion] || tacticalWeights) : tacticalWeights
-  const weightProfile = '全国统一六维'
+  const weightProfile = sameRegion && primaryRegion === '北部赛区' ? '北部赛区校准六维' : '全国统一六维'
   const resultWeight = sameRegion && primaryRegion === '东部赛区' ? 0.10 : 0
   const primaryResult = finite(primary?.strength_analysis?.result_score, 50)
   const opponentResult = finite(opponent?.strength_analysis?.result_score, 50)

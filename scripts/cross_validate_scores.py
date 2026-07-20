@@ -76,6 +76,11 @@ CURRENT_COMPONENT_WEIGHTS = {
 RELEASE_DIMENSION_WEIGHTS = {
     "南部赛区": DIMENSION_WEIGHTS,
     "东部赛区": DIMENSION_WEIGHTS,
+    "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.11, "resource": 0.13},
+}
+PREVIOUS_4_7_DIMENSION_WEIGHTS = {
+    "南部赛区": DIMENSION_WEIGHTS,
+    "东部赛区": DIMENSION_WEIGHTS,
     "北部赛区": DIMENSION_WEIGHTS,
 }
 PREVIOUS_4_5_DIMENSION_WEIGHTS = {
@@ -732,7 +737,7 @@ def main():
             ),
         }
 
-    # Re-audit the retired South 4.6 specialization against the uniform 4.7
+    # Re-audit the retired South 4.6 specialization against the uniform 4.8
     # profile. It is evidence, not a release hurdle: the generic transfer
     # screen below is the symmetric gate for every possible new specialization.
     retired_profiles = {
@@ -741,7 +746,7 @@ def main():
     for region, retired_weights in retired_profiles.items():
         release_weights = RELEASE_DIMENSION_WEIGHTS[region]
         profiles = {}
-        for name, weights in (("retired_4_6", retired_weights), ("release_4_7", release_weights)):
+        for name, weights in (("retired_4_6", retired_weights), ("release_4_8", release_weights)):
             by_fold = defaultdict(list)
             for record in records:
                 if record["region"] != region:
@@ -1352,9 +1357,22 @@ def main():
         single_probability = probability(
             release_strength_diff(ordered[0]), 0.0, region, ordered[0].get("stage")
         )
+        previous_4_7_tactical = sum(
+            ordered[0]["dimension_diff"][key] * weight
+            for key, weight in PREVIOUS_4_7_DIMENSION_WEIGHTS[region].items()
+        )
+        result_weight = release_result_weight(region)
+        previous_4_7_difference = (
+            (1 - result_weight) * previous_4_7_tactical
+            + result_weight * ordered[0]["result_diff"]
+        )
+        previous_4_7_probability = probability(
+            previous_4_7_difference, 0.0, region, ordered[0].get("stage")
+        )
         series_samples.append({
             "fold": fold, "region": region, "match_no": match_no,
             "best_of": best_of, "single_probability": single_probability,
+            "previous_4_7_probability": previous_4_7_probability,
             "won": primary_wins > opponent_wins,
         })
 
@@ -1385,6 +1403,35 @@ def main():
 
     single_series_profile = series_profile(lambda sample: sample["single_probability"])
     iid_series_profile = series_profile(lambda sample: series_probability(sample["single_probability"], sample["best_of"]))
+    previous_4_7_series_profile = series_profile(
+        lambda sample: series_probability(sample["previous_4_7_probability"], sample["best_of"])
+    )
+    north_series_samples = [sample for sample in series_samples if sample["region"] == "北部赛区"]
+    north_series_bootstrap = paired_series_brier_delta(
+        north_series_samples,
+        lambda sample: series_probability(sample["previous_4_7_probability"], sample["best_of"]),
+        lambda sample: series_probability(sample["single_probability"], sample["best_of"]),
+    )
+    north_series_fold_deltas = {
+        str(fold): (
+            iid_series_profile["region_folds"]["北部赛区"][str(fold)]["brier"]
+            - previous_4_7_series_profile["region_folds"]["北部赛区"][str(fold)]["brier"]
+        )
+        for fold in range(1, len(FOLDS) + 1)
+    }
+    report["north_profile_validation"]["complete_series"] = {
+        "previous_4_7": previous_4_7_series_profile["regions"]["北部赛区"],
+        "release_4_8": iid_series_profile["regions"]["北部赛区"],
+        "fold_brier_deltas": north_series_fold_deltas,
+        "paired_bootstrap": north_series_bootstrap,
+    }
+    if max(north_series_fold_deltas.values()) >= 0:
+        failures.append("North 4.8 release does not improve complete-series Brier in every future fold")
+    if (
+        north_series_bootstrap["probability_candidate_improves"] < 0.975
+        or north_series_bootstrap["confidence_interval_95"][1] >= 0
+    ):
+        failures.append("North 4.8 complete-series improvement is not supported by paired bootstrap")
     series_bootstrap = paired_series_brier_delta(
         series_samples,
         lambda sample: sample["single_probability"],
@@ -1539,11 +1586,15 @@ def main():
         if south_release["folds"][key] != south_uniform["folds"][key]:
             failures.append(f"South release deviates from uniform scale in fold {fold}")
     for region in REGIONS:
-        profiles = {"previous_4_5": defaultdict(list), "release_4_7": defaultdict(list)}
+        profiles = {"previous_4_5": defaultdict(list), "previous_4_7": defaultdict(list), "release_4_8": defaultdict(list)}
         for record in records:
             if record["region"] != region:
                 continue
-            for name, weights in (("previous_4_5", PREVIOUS_4_5_DIMENSION_WEIGHTS[region]), ("release_4_7", RELEASE_DIMENSION_WEIGHTS[region])):
+            for name, weights in (
+                ("previous_4_5", PREVIOUS_4_5_DIMENSION_WEIGHTS[region]),
+                ("previous_4_7", PREVIOUS_4_7_DIMENSION_WEIGHTS[region]),
+                ("release_4_8", RELEASE_DIMENSION_WEIGHTS[region]),
+            ):
                 tactical_diff = sum(record["dimension_diff"][key] * weight for key, weight in weights.items())
                 result_weight = release_result_weight(region)
                 difference = (1 - result_weight) * tactical_diff + result_weight * record["result_diff"]
@@ -1551,33 +1602,48 @@ def main():
         report["regional_profile_validation"][region] = {}
         for name, by_fold in profiles.items():
             combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
+            profile_weights = {
+                "previous_4_5": PREVIOUS_4_5_DIMENSION_WEIGHTS,
+                "previous_4_7": PREVIOUS_4_7_DIMENSION_WEIGHTS,
+                "release_4_8": RELEASE_DIMENSION_WEIGHTS,
+            }[name][region]
             report["regional_profile_validation"][region][name] = {
-                "weights": PREVIOUS_4_5_DIMENSION_WEIGHTS[region] if name == "previous_4_5" else RELEASE_DIMENSION_WEIGHTS[region],
+                "weights": profile_weights,
                 "overall": metrics(combined),
                 "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
             }
-    north_profiles = {"global": defaultdict(list), "release": defaultdict(list)}
+    north_profiles = {"previous_4_7": defaultdict(list), "release_4_8": defaultdict(list)}
     for record in records:
         if record["region"] != "北部赛区":
             continue
-        global_diff = sum(record["dimension_diff"][key] * weight for key, weight in DIMENSION_WEIGHTS.items())
+        previous_diff = sum(record["dimension_diff"][key] * weight for key, weight in PREVIOUS_4_7_DIMENSION_WEIGHTS["北部赛区"].items())
         release_diff = release_tactical_diff(record["dimension_diff"], record["region"])
-        north_profiles["global"][record["fold"]].append((1.0 / (1.0 + math.exp(-global_diff / 23.0)), record["won"]))
-        north_profiles["release"][record["fold"]].append((1.0 / (1.0 + math.exp(-release_diff / RELEASE_SCALES["北部赛区"])), record["won"]))
+        north_profiles["previous_4_7"][record["fold"]].append((1.0 / (1.0 + math.exp(-previous_diff / 23.0)), record["won"]))
+        north_profiles["release_4_8"][record["fold"]].append((1.0 / (1.0 + math.exp(-release_diff / RELEASE_SCALES["北部赛区"])), record["won"]))
     for profile, by_fold in north_profiles.items():
         combined = [row for fold in range(1, len(FOLDS) + 1) for row in by_fold[fold]]
         report["north_profile_validation"][profile] = {
             "overall": metrics(combined),
             "folds": {str(fold): metrics(by_fold[fold]) for fold in range(1, len(FOLDS) + 1)},
         }
-    north_global = report["north_profile_validation"]["global"]
-    north_release = report["north_profile_validation"]["release"]
-    if north_release["overall"] != north_global["overall"]:
-        failures.append("North release must use the fold-stable global profile and scale")
+    north_previous = report["north_profile_validation"]["previous_4_7"]
+    north_release = report["north_profile_validation"]["release_4_8"]
+    north_bootstrap = clustered_brier_delta(
+        records, PREVIOUS_4_7_DIMENSION_WEIGHTS["北部赛区"], RELEASE_DIMENSION_WEIGHTS["北部赛区"], "北部赛区"
+    )
+    report["north_profile_validation"]["paired_game_bootstrap"] = north_bootstrap
+    if north_release["overall"]["brier"] >= north_previous["overall"]["brier"]:
+        failures.append("North 4.8 release does not improve game-level chronological Brier over 4.7")
+    if north_release["overall"]["accuracy"] < north_previous["overall"]["accuracy"]:
+        failures.append("North 4.8 release reduces game-level chronological accuracy versus 4.7")
     for fold in range(1, len(FOLDS) + 1):
         key = str(fold)
-        if north_release["folds"][key] != north_global["folds"][key]:
-            failures.append(f"North release deviates from global profile in fold {fold}")
+        if north_release["folds"][key]["brier"] >= north_previous["folds"][key]["brier"]:
+            failures.append(f"North 4.8 release does not improve game-level Brier in fold {fold}")
+        if north_release["folds"][key]["accuracy"] < north_previous["folds"][key]["accuracy"]:
+            failures.append(f"North 4.8 release reduces game-level accuracy in fold {fold}")
+    if north_bootstrap["probability_candidate_improves"] < 0.975 or north_bootstrap["confidence_interval_95"][1] >= 0:
+        failures.append("North 4.8 game-level improvement is not supported by paired official-series bootstrap")
     h2h_rows = {"release": defaultdict(list), "legacy_blend": defaultdict(list)}
     h2h_history_rows = {"release": [], "legacy_blend": []}
     for record in records:

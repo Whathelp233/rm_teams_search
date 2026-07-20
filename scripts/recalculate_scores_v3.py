@@ -32,7 +32,10 @@ DIMENSION_WEIGHTS = {
 MATCHUP_DIMENSION_WEIGHTS = {
     "南部赛区": DIMENSION_WEIGHTS,
     "东部赛区": DIMENSION_WEIGHTS,
-    "北部赛区": DIMENSION_WEIGHTS,
+    # A one-point spatial→resource transfer is the smallest North-only
+    # correction that improves all three future folds at both game and
+    # complete-series level without changing directional accuracy.
+    "北部赛区": {**DIMENSION_WEIGHTS, "spatial": 0.11, "resource": 0.13},
 }
 COMPONENT_WEIGHTS = {
     "firepower": {"clean_output": 0.35, "accuracy": 0.15, "kill_conversion": 0.25, "pressure_uptime": 0.25},
@@ -692,7 +695,7 @@ def main():
     rank_stability = {}
     if not args.backtest:
         fixture = json.loads(RANK_STABILITY_FIXTURE.read_text(encoding="utf-8"))
-        if fixture.get("score_version") != "score-4.0.0" or fixture.get("matchup_model_version") != "matchup-4.7.0":
+        if fixture.get("score_version") != "score-4.0.0" or fixture.get("matchup_model_version") != "matchup-4.8.0":
             raise ValueError("rank-stability fixture is stale for the published score/matchup model")
         if set(fixture.get("teams", {})) != set(teams):
             raise ValueError("rank-stability fixture does not cover exactly the published teams")
@@ -733,15 +736,15 @@ def main():
             },
         }
     index["matchup_validation"] = {
-        "model_version": "matchup-4.7.0",
+        "model_version": "matchup-4.8.0",
         "fold_unit": "complete_official_series",
         "series_weighting": "equal_official_series",
-        "game": {"samples": 285, "brier": 0.212580, "accuracy": 0.677193},
+        "game": {"samples": 285, "brier": 0.212420, "accuracy": 0.677193},
         "series": {
-            "samples": 119, "brier": 0.182572, "accuracy": 0.747899, "ece": 0.041900,
+            "samples": 119, "brier": 0.182246, "accuracy": 0.747899, "ece": 0.042465,
             "bo3_samples": 113, "bo5_samples": 6, "method": "iid_binomial", "temperature": 1.0,
-            "paired_improvement_probability": 0.902700,
-            "paired_ci95": [-0.015390, 0.003538],
+            "paired_improvement_probability": 0.908300,
+            "paired_ci95": [-0.015464, 0.003383],
             "statistically_supported": False,
             "region_fold_cells_improved": 6,
             "region_fold_cells_total": 9,
@@ -789,7 +792,7 @@ def main():
             "raw_win_rate_pct": rounded(100.0 * sum(bool(match.get("won")) for match in payload["matches"]) / max(1, len(payload["matches"]))),
             "opponent_adjustment": "result_score is estimated jointly from every opponent and red/blue side; transparent opponent score is audit evidence and is not added twice",
             "tactical_weight": 1.0, "result_weight": 0.0,
-            "matchup_model_version": "4.7.0",
+            "matchup_model_version": "4.8.0",
             "matchup_result_weights": {"南部赛区": 0.0, "东部赛区": 0.10, "北部赛区": 0.0, "跨赛区": 0.0},
             "matchup_scales": {"南部赛区": 10.0, "东部赛区": 10.0, "北部赛区": 23.0, "跨赛区": 22.0},
             "matchup_stage_scale_multipliers": {"南部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}, "东部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}, "北部赛区": {"小组赛": 1.0, "淘汰赛": 1.0}},
@@ -807,7 +810,7 @@ def main():
                 "direct_dimension_weight": 0.75,
                 "enabling_dimension_weight": 0.25,
             },
-            "model": "rule-aligned tactical composite; complete-series rolling calibration uses unified tactical weights, 10% regularized Bradley-Terry for East, a validated East near-tie scale, and fold-ECE uncertainty floors",
+            "model": "rule-aligned tactical composite; complete-series rolling calibration uses a minimal North spatial-to-resource correction, 10% regularized Bradley-Terry for East, a validated East near-tie scale, and fold-ECE uncertainty floors",
             "red_side_intercept": rounded(side_bias, 3),
         }
         listing = listings[team]
